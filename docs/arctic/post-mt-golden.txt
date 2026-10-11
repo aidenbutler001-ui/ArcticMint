@@ -1,0 +1,79 @@
+== gold_a
+  [post-hash] input                V=601377     F=1198460    verts=8a78727965fa6e00 faces=c94b165fb100795c
+  [fill_holes 0.7s] filled=2834
+  [post-hash] fill_holes           V=604211     F=1209852    verts=a86344f86f89a753 faces=a6bd649323995fea
+  [weld 0.9s]
+  [post-hash] weld                 V=579975     F=1209852    verts=66cc206951d51681 faces=627ff65a72f6298b
+  [fill-holes-stream] directed F=1209852 boundary=752 (single edge map)
+  [fill-holes-stream] undirected F=1209865 boundary=713 (single edge map)
+  [fill 1.3s]
+  [post-hash] fill_small_holes     V=579975     F=1209951    verts=66cc206951d51681 faces=951fe9031b74670d
+  [bvh-mem] F=1209951 nodes=847037 build-working~0.04 GiB
+  [bvh 0.5s]
+  [post-hash] bvh                  tree=bd7ec523ed42eb54
+  [remesh 3.8s]
+  [post-hash] remesh               V=1117351    F=2235640    verts=a1c95f0f19bb550c faces=61796f0f2a6bfa0d
+    [clean] faces=2235640, flipped 0 for consistent winding
+  [clean 3.0s]
+  [post-hash] clean_mesh           V=1117351    F=2235640    verts=a1c95f0f19bb550c faces=61796f0f2a6bfa0d
+  [clean+drop 3.1s] dropped=127
+  [post-hash] drop_components      V=1084184    F=2169664    verts=b902f0840aa4139f faces=b2e48a8f4e163f82
+  [post-hash] decimate_qem         V=141301     F=282910     verts=b46f24ba428a9c71 faces=628e7466f9efb317
+  [post-hash] weld2                V=141299     F=282910     verts=5e7b37a6b803b21c faces=d771d27edd2a85cf
+  [post-hash] fill2                V=141299     F=282910     verts=5e7b37a6b803b21c faces=d771d27edd2a85cf
+  [post-hash] drop2                V=141299     F=282910     verts=5e7b37a6b803b21c faces=d771d27edd2a85cf
+  [decimate 52.9s]
+  [bake 22.2s]
+  [audit] bake: faces in=282910 out=282910 (dropped 0)
+Maximum resident set size (kbytes): 506032 wall 87.4
+glb 4fe85a54c0cef47b
+== gold_b
+  [post-hash] input                V=1210895    F=2422016    verts=f5a72ad8f93fa1ca faces=fb926a7c5189ec0a
+  [fill_holes 1.5s] filled=2865
+  [post-hash] fill_holes           V=1213760    F=2433506    verts=6a8e9531db3c3d62 faces=68c25bac09d053d3
+  [weld 2.0s]
+  [post-hash] weld                 V=1163502    F=2433506    verts=ea71b310d90e9bf2 faces=0ff4364605dc05c7
+  [fill-holes-stream] directed F=2433506 boundary=676 (single edge map)
+  [fill-holes-stream] undirected F=2433518 boundary=640 (single edge map)
+  [fill 2.9s]
+  [post-hash] fill_small_holes     V=1163502    F=2433622    verts=ea71b310d90e9bf2 faces=42eb4a9ed944ee1a
+  [bvh-mem] F=2433622 nodes=1721515 build-working~0.09 GiB
+  [bvh 0.9s]
+  [post-hash] bvh                  tree=f14da5caa6275dbf
+  [remesh 8.4s]
+  [post-hash] remesh               V=2213859    F=4431448    verts=17da3065f0c940b0 faces=e15e2e5653abccbd
+    [clean] faces=4431448, flipped 0 for consistent winding
+  [clean 6.0s]
+  [post-hash] clean_mesh           V=2213859    F=4431448    verts=17da3065f0c940b0 faces=e15e2e5653abccbd
+  [clean+drop 7.5s] dropped=172
+  [post-hash] drop_components      V=2198335    F=4400988    verts=ee97ea185a5ebff4 faces=38e3da0bd8336c03
+  [post-hash] decimate_qem         V=147980     F=296646     verts=08ad3c5cf49752d3 faces=d4da5722e17d75af
+  [post-hash] weld2                V=147980     F=296646     verts=08ad3c5cf49752d3 faces=d4da5722e17d75af
+  [post-hash] fill2                V=147980     F=296646     verts=08ad3c5cf49752d3 faces=d4da5722e17d75af
+  [post-hash] drop2                V=147929     F=296556     verts=65c747c7ae3aeed3 faces=27a997854ecbe186
+  [decimate 147.3s]
+  [bake 22.3s]
+  [audit] bake: faces in=296556 out=296556 (dropped 0)
+Maximum resident set size (kbytes): 982320 wall 194.9
+glb 7999c642c96bbadd
+== gold_c
+  [post-hash] input                V=2481341    F=4964368    verts=88011929236806fa faces=869bb80080a485c9
+  [fill_holes 3.2s] filled=2889
+  [post-hash] fill_holes           V=2484230    F=4975928    verts=1a4c2de2fc5d144b faces=97826c21ba754475
+  [weld 4.2s]
+  [post-hash] weld                 V=2382666    F=4975928    verts=011ecf01e4a743f1 faces=2931a669d458d2cb
+  [fill-holes-stream] directed F=4975928 boundary=643 (single edge map)
+  [fill-holes-stream] undirected F=4975945 boundary=598 (single edge map)
+  [fill 5.5s]
+  [post-hash] fill_small_holes     V=2382666    F=4976073    verts=011ecf01e4a743f1 faces=331a7896cd21e62a
+  [bvh-mem] F=4976073 nodes=3660689 build-working~0.18 GiB
+  [bvh 2.1s]
+  [post-hash] bvh                  tree=d57a49f8011df891
+  [remesh 32.3s]
+  [post-hash] remesh               V=4568408    F=9141516    verts=f177eabec6fcda54 faces=7da7497e77431f32
+    [clean] faces=9141516, flipped 0 for consistent winding
+  [clean 18.5s]
+  [post-hash] clean_mesh           V=4568408    F=9141516    verts=f177eabec6fcda54 faces=7da7497e77431f32
+  [clean+drop 19.1s] dropped=161
+  [post-hash] drop_components      V=4426452    F=8857820    verts=981d7b21fc10c5ea faces=94babccf23777da4
+Maximum resident set size (kbytes): 1734704 wall 66.7

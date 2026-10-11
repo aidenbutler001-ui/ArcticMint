@@ -1,9 +1,13 @@
 #include "tri_bvh.h"
+#include "post_parallel.h"
 #include <algorithm>
 #include <cmath>
 #include <cstring>
 #include <cstdio>
+#include <exception>
+#include <thread>
 #include <unordered_map>
+#include <utility>
 
 namespace trellis {
 
@@ -64,6 +68,18 @@ size_t bvh_node_count(int64_t n) {
     return bvh_node_count_memo(n, memo);
 }
 
+// Node count of a subtree over n primitives, without allocation: the halves
+// of n and n+1 are always {m, m+1} with m = n/2, so carry the pair down.
+std::pair<size_t, size_t> bvh_node_count_pair(int64_t n) {   // {count(n), count(n+1)}
+    if (n + 1 <= 4) return {1, 1};
+    if (n <= 4) return {1, 1 + 2};   // n+1 == 5 -> 1 + count(2) + count(3)
+    const int64_t m = n / 2;
+    const auto c = bvh_node_count_pair(m);   // count(m), count(m+1)
+    auto cnt = [&](int64_t k) { return k == m ? c.first : c.second; };
+    const int64_t a0 = n / 2, b0 = n - a0, a1 = (n + 1) / 2, b1 = n + 1 - a1;
+    return {1 + cnt(a0) + cnt(b0), 1 + cnt(a1) + cnt(b1)};
+}
+
 inline float box_dist2(const float* p, const float* bmin, const float* bmax) {
     float d2 = 0.f;
     for (int k = 0; k < 3; ++k) {
@@ -83,11 +99,14 @@ TriBvh TriBvh::build(const float* verts, int64_t V, const int32_t* faces, int64_
     if (F == 0) return t;
     t.prim_.resize((size_t)F);
     std::vector<float> cent((size_t)F * 3);
-    for (int64_t f = 0; f < F; ++f) {
-        t.prim_[f] = (int32_t)f;
-        for (int k = 0; k < 3; ++k)
-            cent[3*f+k] = (verts[3*faces[3*f]+k] + verts[3*faces[3*f+1]+k] + verts[3*faces[3*f+2]+k]) / 3.f;
-    }
+    // Arctic: centroids in parallel (same per-face arithmetic, so same values)
+    post::parallel_for(F, 1 << 15, [&](int64_t b, int64_t e) {
+        for (int64_t f = b; f < e; ++f) {
+            t.prim_[f] = (int32_t)f;
+            for (int k = 0; k < 3; ++k)
+                cent[3*f+k] = (verts[3*faces[3*f]+k] + verts[3*faces[3*f+1]+k] + verts[3*faces[3*f+2]+k]) / 3.f;
+        }
+    });
     // The old 2*F reserve is a severe over-allocation on giant decoded meshes.
     // With leaf size 4 the balanced tree needs far fewer nodes; compute the exact
     // count so vector growth never creates a second multi-GiB copy either.
@@ -100,6 +119,67 @@ TriBvh TriBvh::build(const float* verts, int64_t V, const int32_t* faces, int64_
         printf("  [bvh-mem] F=%lld nodes=%zu build-working~%.2f GiB\n",
                (long long)F, node_need, work_gib);
         fflush(stdout);
+    }
+
+    if (!post::legacy() && F >= 4096 && post::threads() > 1) {
+        // Arctic: parallel build with the legacy tree, byte for byte. The legacy
+        // loop pops spans LIFO (right child first) and gives a node's children
+        // the next two ids when the node is processed, so a node processed
+        // with id counter c has children (c, c+1); the right child is processed
+        // with counter c+2 and the left with c+1+count(right). Each subtree
+        // only touches its own prim_ range, so subtrees can run concurrently.
+        t.nodes_.resize(node_need);
+        const int nt = post::threads();
+        int spawn_depth = 1;
+        while ((1 << spawn_depth) < 2 * nt && spawn_depth < 12) ++spawn_depth;
+        struct Builder {
+            TriBvh& t; const float* verts; const int32_t* faces; const std::vector<float>& cent; int spawn_depth;
+            void node(int32_t id, int32_t begin, int32_t end, int32_t counter, int depth) {
+                Node& n0 = t.nodes_[(size_t)id];
+                float bmin[3] = {1e30f, 1e30f, 1e30f}, bmax[3] = {-1e30f, -1e30f, -1e30f};
+                for (int32_t i = begin; i < end; ++i) {
+                    const int32_t f = t.prim_[(size_t)i];
+                    for (int j = 0; j < 3; ++j) {
+                        const float* v = &verts[3*faces[3*f+j]];
+                        for (int k = 0; k < 3; ++k) {
+                            bmin[k] = std::min(bmin[k], v[k]);
+                            bmax[k] = std::max(bmax[k], v[k]);
+                        }
+                    }
+                }
+                std::memcpy(n0.bmin, bmin, 12);
+                std::memcpy(n0.bmax, bmax, 12);
+                const int32_t cnt = end - begin;
+                if (cnt <= 4) { n0.left = begin; n0.count = cnt; return; }
+                int axis = 0;
+                float ext[3] = {bmax[0]-bmin[0], bmax[1]-bmin[1], bmax[2]-bmin[2]};
+                if (ext[1] > ext[axis]) axis = 1;
+                if (ext[2] > ext[axis]) axis = 2;
+                const int32_t mid = begin + cnt / 2;
+                const std::vector<float>& c = cent;
+                std::nth_element(t.prim_.begin() + begin, t.prim_.begin() + mid, t.prim_.begin() + end,
+                                 [&c, axis](int32_t a, int32_t b) { return c[3*a+axis] < c[3*b+axis]; });
+                const int32_t lc = counter;
+                n0.left = lc;
+                n0.count = 0;
+                const int32_t right_counter = lc + 2;
+                const int32_t left_counter = lc + 1 + (int32_t)bvh_node_count_pair(end - mid).first;
+                if (depth < spawn_depth && cnt >= 8192) {
+                    std::exception_ptr err;
+                    std::thread th([&] { try { node(lc + 1, mid, end, right_counter, depth + 1); }
+                                         catch (...) { err = std::current_exception(); } });
+                    try { node(lc, begin, mid, left_counter, depth + 1); } catch (...) { th.join(); throw; }
+                    th.join();
+                    if (err) std::rethrow_exception(err);
+                } else {
+                    node(lc + 1, mid, end, right_counter, depth + 1);
+                    node(lc, begin, mid, left_counter, depth + 1);
+                }
+            }
+        };
+        Builder b{t, verts, faces, cent, spawn_depth};
+        b.node(0, 0, (int32_t)F, 1, 0);
+        return t;
     }
 
     struct Span { int32_t node, begin, end; };
@@ -144,6 +224,11 @@ TriBvh TriBvh::build(const float* verts, int64_t V, const int32_t* faces, int64_
         stack.push_back({lc + 1, mid, s.end});
     }
     return t;
+}
+
+uint64_t TriBvh::debug_hash() const {
+    return post::hash_bytes(nodes_.data(), nodes_.size() * sizeof(Node),
+                            post::hash_bytes(prim_.data(), prim_.size() * sizeof(int32_t)));
 }
 
 TriBvh::Hit TriBvh::closest(const float p[3], float max_dist) const {

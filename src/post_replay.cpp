@@ -11,6 +11,11 @@
 //               [--quad-refine-seed edges.tsv] [--quad-refine-qualified]
 //               [--quad-repair-source original.post]
 //               [--quad-source-cover-output selected.obj]
+//               [--fill-holes] [--stop-before-qem] [--no-audit]
+//   --fill-holes      run the CLI's centroid fill_holes(3e-2) first (the CLI runs it before its dump point)
+//   --stop-before-qem exit after remesh/clean/drop (front chain only)
+//   --no-audit        skip the edge-count audits (they are charged to the next stage's time)
+//   TRELLIS_POST_HASH=1 prints per-stage buffer hashes (include/post_parallel.h)
 #include "uv_bake.h"
 #include "tri_bvh.h"
 #include "remesh_dc.h"
@@ -20,6 +25,7 @@
 #include "quad_refinement_io.h"
 #include "quad_components.h"
 #include "quad_topology.h"
+#include "post_parallel.h"
 #ifdef TRELLIS_HAVE_QUAD_MATCHING
 #include "quad_matching.h"
 #ifdef TRELLIS_HAVE_QUAD_COLLISION
@@ -52,7 +58,9 @@ static double now() {
 
 // boundary/non-manifold audit over the welded index space (positions assumed welded)
 #include <unordered_map>
+static bool g_no_audit = false;
 static void audit(const char* tag, const std::vector<int32_t>& faces) {
+    if (g_no_audit) return;
     std::unordered_map<uint64_t,int> e;
     e.reserve(faces.size() * 2);
     const size_t F = faces.size() / 3;
@@ -81,6 +89,7 @@ int main(int argc, char** argv) {
     bool quad_match_safe = false;
     bool boxuv = false, do_weld = true, do_fill = true, do_bake = true, do_remesh = true, do_snap = true;
     bool keep_components = false, shape_flips = false, shape_smooth = false;
+    bool cli_fill_holes = false, stop_before_qem = false;
     float shape_min_angle = 1.0f;
     float shape_max_move = 0.001f;
     int band = 1;
@@ -95,6 +104,9 @@ int main(int argc, char** argv) {
         else if (a == "--no-fill") do_fill = false;
         else if (a == "--no-bake") do_bake = false;
         else if (a == "--no-remesh") do_remesh = false;
+        else if (a == "--fill-holes") cli_fill_holes = true;
+        else if (a == "--stop-before-qem") stop_before_qem = true;
+        else if (a == "--no-audit") g_no_audit = true;
         else if (a == "--band" && i+1 < argc) band = atoi(argv[++i]);
         else if (a == "--geometry-res" && i+1 < argc) {
             char* end = nullptr;
@@ -218,34 +230,49 @@ int main(int argc, char** argv) {
     }
     printf("loaded: V=%d F=%d voxels=%d pbr_res=%d geometry_res=%d\n", V, F, Mv, res, geometry_res);
 
+    using trellis::post::hash_report;
+    hash_report("input", verts, faces);
     double t = now();
+    if (cli_fill_holes) {
+        const int nh = trellis::fill_holes(verts, faces, 3e-2f);
+        printf("  [fill_holes %.1fs] filled=%d\n", now()-t, nh); t = now();
+        hash_report("fill_holes", verts, faces);
+    }
     if (do_weld) trellis::weld_vertices(verts, faces, nullptr, 1.0f / ((float)geometry_res * 8.0f));
     printf("  [weld %.1fs]\n", now()-t); t = now();
+    hash_report("weld", verts, faces);
     audit("weld", faces);
     if (do_fill) trellis::fill_small_holes(faces);
     printf("  [fill %.1fs]\n", now()-t); t = now();
+    hash_report("fill_small_holes", verts, faces);
     audit("fill_small_holes", faces);
 
     trellis::TriBvh bvh = trellis::TriBvh::build(verts.data(), (int64_t)verts.size()/3,
                                                  faces.data(), (int64_t)faces.size()/3);
     printf("  [bvh %.1fs]\n", now()-t); t = now();
+    trellis::post::hash_report_raw("bvh", "tree", bvh.debug_hash());
     trellis::Mesh rm;
     if (do_remesh) {
         rm = trellis::remesh_narrow_band_dc(verts.data(), (int64_t)verts.size()/3,
                                             faces.data(), (int64_t)faces.size()/3, bvh, geometry_res, band);
         printf("  [remesh %.1fs]\n", now()-t); t = now();
+        hash_report("remesh", rm.verts, rm.faces);
         audit("remesh", rm.faces);
         // match the CLI: clean degenerates/unify winding, drop floater components
         if (rm.F() > 0) {
             trellis::clean_mesh(rm.V(), rm.faces);
+            printf("  [clean %.1fs]\n", now()-t);
+            hash_report("clean_mesh", rm.verts, rm.faces);
             audit("clean_mesh", rm.faces);
             if (!keep_components) {
                 int ndrop = trellis::drop_small_components(rm.verts, rm.faces, 0.02f);
                 printf("  [clean+drop %.1fs] dropped=%d\n", now()-t, ndrop); t = now();
+                hash_report("drop_components", rm.verts, rm.faces);
                 audit("drop_components", rm.faces);
             }
         }
     }
+    if (stop_before_qem) { printf("  stop before QEM\n"); return 0; }
     const std::vector<float>& sverts = rm.F() > 0 ? rm.verts : verts;
     const std::vector<int32_t>& sfaces = rm.F() > 0 ? rm.faces : faces;
 
@@ -255,21 +282,25 @@ int main(int argc, char** argv) {
     else {
         // match the CLI: faithful QEM port (not the old meshopt/FQMS decimate_simplify)
         trellis::decimate_qem(sverts, (int)sverts.size()/3, sfaces, (int)sfaces.size()/3, faces_target, dv, df);
+        hash_report("decimate_qem", dv, df);
         audit("decimate_qem", df);
         if (!std::getenv("TRELLIS_QEM_PRESERVE_TOPOLOGY") &&
             !std::getenv("TRELLIS_QEM_COLLISION_GUARD")) {
             if (do_weld) {
                 trellis::weld_vertices(dv, df, nullptr, 1.0f / ((float)geometry_res * 8.0f));
+                hash_report("weld2", dv, df);
                 audit("weld2", df);
             }
             if (do_fill) {
                 trellis::fill_small_holes(df);
+                hash_report("fill2", dv, df);
                 audit("fill2", df);
             }
         }
         if (!keep_components) {
             int ndrop2 = trellis::drop_small_components(dv, df, 0.03f);
             if (ndrop2) printf("  dropped %d more comps\n", ndrop2);
+            hash_report("drop2", dv, df);
             audit("drop2", df);
         }
     }

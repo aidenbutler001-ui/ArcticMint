@@ -15,6 +15,7 @@
 #include "uv_bake.h"
 #include "tri_bvh.h"
 #include "remesh_dc.h"
+#include "post_parallel.h"
 #include "mesh_shape.h"
 #include "stb_image_write.h"
 #include "trellis_run.h"
@@ -529,6 +530,7 @@ int trellis_run(const trellis::TrellisParams& cfg) {
         // remeshed surface (ours had ~30x the reference's boundary edges without this).
         const int nh = trellis::fill_holes(mesh.verts, mesh.faces, 3e-2f);
         if (nh) printf("      filled %d small holes -> V=%d F=%d\n", nh, mesh.V(), mesh.F());
+        trellis::post::hash_report("fill_holes", mesh.verts, mesh.faces);
     }
     if (const char* dp = std::getenv("TRELLIS_DUMP_DECMESH")) {   // pre-remesh decoded mesh (int V,F,verts,faces) for remesh A/B
         FILE* f = fopen(dp, "wb"); if (f) { int v=mesh.V(), fc=mesh.F();
@@ -872,7 +874,9 @@ int trellis_run(const trellis::TrellisParams& cfg) {
         }
         trellis::weld_vertices(mesh.verts, mesh.faces, colors.empty() ? nullptr : &colors,
                                1.0f / ((float)so.res * 8.0f));
+        trellis::post::hash_report("weld", mesh.verts, mesh.faces);
         trellis::fill_small_holes(mesh.faces);
+        trellis::post::hash_report("fill_small_holes", mesh.verts, mesh.faces);
         // Reference production pipeline: rebuild the noisy dual-grid mesh as
         // the narrow-band offset shell (watertight manifold), then quadric
         // simplify to the face target. The BVH over the original hole-filled
@@ -889,6 +893,8 @@ int trellis_run(const trellis::TrellisParams& cfg) {
         trellis::Mesh rm = trellis::remesh_narrow_band_dc(mesh.verts.data(), mesh.V(),
                                                           mesh.faces.data(), mesh.F(),
                                                           bvh, so.res, remesh_band);
+        trellis::post::hash_report_raw("bvh", "tree", bvh.debug_hash());
+        trellis::post::hash_report("remesh", rm.verts, rm.faces);
         // Clean the narrow-band DC output (drop degenerate faces, unify winding), then drop
         // decode floaters (the reference is a single watertight component; ours shattered into
         // 50+ pieces). The faithful QEM simplifier below handles surface smoothing via its
@@ -896,8 +902,10 @@ int trellis_run(const trellis::TrellisParams& cfg) {
         // which keeps the mesh aligned to the voxel PBR volume for correct texture sampling).
         if (rm.F() > 0) {
             trellis::clean_mesh(rm.V(), rm.faces);
+            trellis::post::hash_report("clean_mesh", rm.verts, rm.faces);
             if (!std::getenv("TRELLIS_RETOPO_KEEP_COMPONENTS")) {
                 int ndrop = trellis::drop_small_components(rm.verts, rm.faces, 0.02f);
+                trellis::post::hash_report("drop_components", rm.verts, rm.faces);
                 printf("  remesh postproc: dropped %d floater comps -> V=%d F=%d\n", ndrop, rm.V(), rm.F());
                 fflush(stdout);
             }
@@ -917,6 +925,7 @@ int trellis_run(const trellis::TrellisParams& cfg) {
             fflush(stdout);
             trellis::decimate_qem(sverts, (int)sverts.size()/3, sfaces, (int)sfaces.size()/3,
                                   qem_target, dv, df);
+            trellis::post::hash_report("decimate_qem", dv, df);
             if (!std::getenv("TRELLIS_QEM_PRESERVE_TOPOLOGY") &&
                 !std::getenv("TRELLIS_QEM_COLLISION_GUARD")) {
                 trellis::weld_vertices(dv, df, nullptr, 1.0f / ((float)so.res * 8.0f));

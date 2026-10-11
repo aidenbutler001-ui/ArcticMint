@@ -4,6 +4,7 @@
 #include "meshoptimizer.h"
 #include "Simplify.h"
 #include "tri_bvh.h"
+#include "post_parallel.h"
 #include <climits>
 #include <cstdio>
 #include <cstdlib>
@@ -202,6 +203,7 @@ void decimate_cluster(const std::vector<float>& verts, int V, const std::vector<
 
 int weld_vertices(std::vector<float>& verts, std::vector<int32_t>& faces, std::vector<float>* colors3,
                   float step) {
+    if (!post::legacy()) return post::weld_vertices(verts, faces, colors3, step);   // Arctic: parallel, same output
     const int V = (int)verts.size() / 3;
     if (colors3 && colors3->size() != verts.size()) {   // guard: per-vertex colors out of sync
         fprintf(stderr, "  weld: colors/verts size mismatch (%zu vs %zu), ignoring colors\n",
@@ -251,6 +253,7 @@ int weld_vertices(std::vector<float>& verts, std::vector<int32_t>& faces, std::v
 }
 
 void clean_mesh(int V, std::vector<int32_t>& faces) {
+    if (!post::legacy() && faces.size() / 3 < (1u << 30)) return post::clean_mesh(V, faces);   // Arctic: same output
     (void)V;
     // 1. drop degenerate faces (a repeated vertex -> zero area, blocks collapse)
     {
@@ -399,6 +402,7 @@ void decimate_simplify(const std::vector<float>& verts, int V, const std::vector
 // reference reconstruction is a single watertight component; these floaters are pure junk
 // that spawn extra UV charts and visible specks. Compacts verts/faces in place.
 int drop_small_components(std::vector<float>& verts, std::vector<int32_t>& faces, float frac) {
+    if (!post::legacy()) return post::drop_small_components(verts, faces, frac);   // Arctic: same output
     const int V = (int)verts.size() / 3;
     const size_t F = faces.size() / 3;
     if (V == 0 || F == 0) return 0;
@@ -430,6 +434,19 @@ int drop_small_components(std::vector<float>& verts, std::vector<int32_t>& faces
     return dropped;
 }
 
+namespace {
+// Keys of a map in its iteration order (legacy) or ascending (Arctic canonical hole order,
+// TRELLIS_POST_CANON_HOLES=1). Hole-fill bodies never modify the map being listed.
+template <class M>
+std::vector<int> ordered_keys(const M& m) {
+    std::vector<int> k;
+    k.reserve(m.size());
+    for (const auto& kv : m) k.push_back(kv.first);
+    if (post::canon_holes()) std::sort(k.begin(), k.end());
+    return k;
+}
+}  // namespace
+
 // Fill small boundary loops with a centroid fan (port of CuMesh clean_up.cu fill_holes).
 // A boundary edge is a directed face edge (u,v) with no opposing (v,u); rim cycles are
 // walked in reverse face direction (v->u keeps the new fan's winding consistent with the
@@ -439,6 +456,14 @@ int drop_small_components(std::vector<float>& verts, std::vector<int32_t>& faces
 int fill_holes(std::vector<float>& verts, std::vector<int32_t>& faces, float max_perimeter) {
     const size_t F = faces.size() / 3;
     if (F == 0) return 0;
+    // rim successor map: boundary edge (u,v) is traversed v->u, so nxt[v] = u
+    std::unordered_map<int,int> nxt;
+    if (post::canon_holes()) {   // Arctic: sort-based boundary extraction (same edge set)
+        for (uint64_t k : post::boundary_edges(faces)) {
+            const int u = (int)(k >> 32), v = (int)(k & 0xFFFFFFFF);
+            if (!nxt.emplace(v, u).second) nxt[v] = INT32_MIN;   // non-manifold junction: poison
+        }
+    } else {
     // count undirected edge uses; remember one directed representative
     std::unordered_map<uint64_t, std::pair<int,uint64_t>> euse;   // key -> {count, directed (u<<32|v)}
     euse.reserve(F * 2);
@@ -451,19 +476,17 @@ int fill_holes(std::vector<float>& verts, std::vector<int32_t>& faces, float max
             ++e.first; e.second = ((uint64_t)(uint32_t)u << 32) | (uint32_t)v;
         }
     }
-    // rim successor map: boundary edge (u,v) is traversed v->u, so nxt[v] = u
-    std::unordered_map<int,int> nxt;
     for (auto& kv : euse)
         if (kv.second.first == 1) {
             const int u = (int)(kv.second.second >> 32), v = (int)(kv.second.second & 0xFFFFFFFF);
             if (!nxt.emplace(v, u).second) nxt[v] = INT32_MIN;   // non-manifold junction: poison
         }
+    }
     int filled = 0;
     std::unordered_map<int,char> visited;
     std::vector<int> loop;
-    for (auto& kv : nxt) {
-        const int start = kv.first;
-        if (kv.second == INT32_MIN || visited.count(start)) continue;
+    for (const int start : ordered_keys(nxt)) {
+        if (nxt.at(start) == INT32_MIN || visited.count(start)) continue;
         loop.clear();
         int cur = start; bool ok = true;
         double perim = 0.0;
@@ -558,8 +581,16 @@ int fill_small_holes(std::vector<int32_t>& faces, int max_loop) {
         return ((uint64_t)(uint32_t)a << 32) | (uint32_t)b;
     };
 
-    auto collect_boundary = [&](const char* pass) {
+    auto collect_boundary = [&](const char* pass) -> std::vector<uint64_t> {
         const size_t F = faces.size() / 3;
+        if (post::canon_holes()) {   // Arctic: sort-based boundary extraction (same edge set)
+            std::vector<uint64_t> b = post::boundary_edges(faces);
+            if (F >= 1000000) {
+                printf("  [fill-holes-stream] %s F=%zu boundary=%zu (sorted edge CSR)\n", pass, F, b.size());
+                fflush(stdout);
+            }
+            return b;
+        }
         struct Use { int count = 0; uint64_t directed = 0; };
         std::unordered_map<uint64_t, Use> euse;
         // This is the same asymptotic map as fill_holes(), which already runs
@@ -599,8 +630,7 @@ int fill_small_holes(std::vector<int32_t>& faces, int max_loop) {
     std::unordered_map<int, bool> used;
     int filled = 0;
     size_t added = 0;
-    for (const auto& [start, first] : nxt) {
-        (void)first;
+    for (const int start : ordered_keys(nxt)) {
         if (used[start] || outd[start] != 1 || ind[start] != 1) continue;
         std::vector<int> loop = {start};
         int cur = start;
@@ -644,7 +674,8 @@ int fill_small_holes(std::vector<int32_t>& faces, int max_loop) {
         adj[a].push_back(b); adj[b].push_back(a);
     }
     std::unordered_map<int, bool> used2;
-    for (const auto& [start, nbrs] : adj) {
+    for (const int start : ordered_keys(adj)) {
+        const std::vector<int>& nbrs = adj.at(start);
         if (used2[start] || nbrs.size() != 2) continue;
         std::vector<int> loop = {start};
         int prev = start, cur = nbrs[0];

@@ -109,6 +109,8 @@ add_library(trellis_core STATIC
   thirdparty/xatlas/xatlas.cpp
   thirdparty/meshoptimizer/simplifier.cpp
   src/tri_bvh.cpp
+  src/post_parallel.cpp
+  src/post_mesh.cpp
   src/remesh_dc.cpp
   src/decimate_qem.cpp
   src/mesh_shape.cpp
@@ -416,11 +418,14 @@ target_include_directories(trellis-test-uv-chart-density PRIVATE include)
 add_executable(trellis-test-quad-quality src/test_quad_quality.cpp)
 target_include_directories(trellis-test-quad-quality PRIVATE include)
 
-add_executable(trellis-test-uv-normal-margin src/test_uv_normal_margin.cpp src/tri_bvh.cpp)
+find_package(Threads REQUIRED)
+add_executable(trellis-test-uv-normal-margin src/test_uv_normal_margin.cpp src/tri_bvh.cpp src/post_parallel.cpp)
 target_include_directories(trellis-test-uv-normal-margin PRIVATE include)
+target_link_libraries(trellis-test-uv-normal-margin PRIVATE Threads::Threads)
 
-add_executable(trellis-test-voxel-pbr src/test_voxel_pbr.cpp src/tri_bvh.cpp)
+add_executable(trellis-test-voxel-pbr src/test_voxel_pbr.cpp src/tri_bvh.cpp src/post_parallel.cpp)
 target_include_directories(trellis-test-voxel-pbr PRIVATE include)
+target_link_libraries(trellis-test-voxel-pbr PRIVATE Threads::Threads)
 
 add_executable(trellis-test-uv-preset src/test_uv_preset.cpp)
 target_link_libraries(trellis-test-uv-preset PRIVATE trellis_core)

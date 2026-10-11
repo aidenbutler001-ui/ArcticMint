@@ -42,12 +42,47 @@ with output byte-identical to the original code. Plan and profile: project repo
   reproduced exactly: a corner is new iff no voxel at one of 13 lexicographically-negative offsets owns it. Quad lists
   are built per fixed chunk and concatenated in chunk order. UDF passes use dynamic chunks.
 
-## Hole filling (`fill_holes`, `fill_small_holes`): needs a decision
+## Hole filling (`fill_holes`, `fill_small_holes`): canonical order, opt-in
 
-Both iterate `std::unordered_map`s over the (tiny) boundary set to pick loop start vertices, so loop order and the fan
-apex depend on the standard library's hash order (differs between libstdc++ and MSVC today). The big cost is the edge
-use-count map (25-35 s at 17M faces). The boundary *set* can be found with a sort in a few seconds, but reproducing
-the *order* means simulating a particular library's hash table. See the proposal section below once measured.
+Both pick loop start vertices by iterating `std::unordered_map`s, so loop order, the fan apex and the new centroid
+vertex ids depend on the standard library's hash order (already different between libstdc++ and MSVC). The expensive
+part is the edge use-count map (25-35 s at 16.5M faces); the boundary set itself is tiny.
+
+`TRELLIS_POST_CANON_HOLES=1` finds the boundary edges with a parallel sorted edge CSR (`post::boundary_edges`) and
+processes loops in ascending vertex id (so a loop starts at its smallest vertex). Default is still the legacy
+order and is byte-identical to before. **Re-baselining to the canonical order needs Aiden's approval.**
+
+Measured on d1024 (4.98M raw faces, same hole set both ways):
+
+| | legacy | canonical |
+|---|---|---|
+| `fill_holes` centroid fans | 3.2 s, 2889 filled | 0.3-0.5 s, 2889 filled |
+| `fill_small_holes` | 5.5 s, +145 faces | 0.4 s, +145 faces |
+| area after `fill_holes` | 1.77187933 | 1.77187933 |
+| area after `fill_small_holes` | 1.76823585 | 1.7682359 (rel. diff 3e-8) |
+
+What differs: the fan apex of each filled loop and the order of appended faces / centroid vertices, so later hashes
+differ. The remesh output keeps identical faces (`faces=7da7497e77431f32` in both); only the positions of a few
+vertices near filled holes change, because the projection-back snaps to the (slightly different) fan patch.
+On non-manifold input (a boundary path that runs into a cycle) the *set* of loops `fill_holes` fills also depends on
+visiting order in the legacy code (a path start marks the cycle visited), so the canonical order can fill a
+different loop there; this is order-dependence the legacy code already has between standard libraries.
+`post-equiv-test` checks canonical mode is identical at 1,2,3,4,7,16 threads and, for `fill_small_holes`, that it
+fills the same number of loops and leaves the same boundary set as legacy.
+
+## Follow-up for the PC: CUDA device for `decimate_qem_gpu` (task B0)
+
+`src/decimate_qem.cu` never calls `cudaSetDevice`; it uses the calling thread's current device.
+- `trellis-cli` runs QEM on the main thread after the texture/shape decode. ggml's CUDA backend is process-wide
+  (`Model::free()` never frees it) and calls `ggml_cuda_set_device(<chosen device>)` for every graph compute and
+  buffer operation, so the current device is still the one picked by `--gpu` at QEM time. Low risk.
+- Real cases that land on CUDA device 0 (the 3060 Ti with `CUDA_DEVICE_ORDER=PCI_BUS_ID`): `post-replay` (never
+  touches ggml) and any run where no ggml GPU op ran on that thread (e.g. all models on CPU).
+- Not changed here: no nvcc in the cloud container, so a `.cu` edit could not be compile-checked. If wanted, add a
+  small `cudaSetDevice(g_post_cuda_device)` hook in `decimate_qem_gpu`, set from `cfg.gpu`.
+- To confirm on the PC, log `int d; cudaGetDevice(&d); fprintf(stderr, "[decimate_qem_gpu] device %d\n", d);` at
+  the top of `decimate_qem_gpu` and check it equals the `--gpu` device (peak allocation at 30M faces is ~3-5 GB, so
+  it still fits the 3060 Ti if it does land there).
 
 ## Golden references (legacy code, TRELLIS_POST_HASH=1, 4 vCPU)
 

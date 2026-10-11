@@ -4,6 +4,7 @@
 
 #include <algorithm>
 #include <cstdio>
+#include <cmath>
 #include <cstdlib>
 #include <cstring>
 #include <exception>
@@ -123,9 +124,20 @@ uint64_t hash_bytes(const void* data, size_t bytes, uint64_t seed) {
 
 void hash_report(const char* stage, const std::vector<float>& verts, const std::vector<int32_t>& faces) {
     if (!hash_enabled()) return;
-    printf("  [post-hash] %-20s V=%-10zu F=%-10zu verts=%016llx faces=%016llx\n", stage, verts.size() / 3,
-           faces.size() / 3, (unsigned long long)hash_bytes(verts.data(), verts.size() * sizeof(float)),
-           (unsigned long long)hash_bytes(faces.data(), faces.size() * sizeof(int32_t)));
+    // total surface area (double, serial, deterministic): lets two hole-fill orders be compared by geometry
+    double area = 0;
+    const size_t F = faces.size() / 3, V = verts.size() / 3;
+    for (size_t f = 0; f < F; ++f) {
+        const int32_t a = faces[3*f], b = faces[3*f+1], c = faces[3*f+2];
+        if (a < 0 || b < 0 || c < 0 || (size_t)a >= V || (size_t)b >= V || (size_t)c >= V) continue;
+        const float* p = &verts[3*(size_t)a]; const float* q = &verts[3*(size_t)b]; const float* r = &verts[3*(size_t)c];
+        const double u[3] = {q[0]-p[0], q[1]-p[1], q[2]-p[2]}, w[3] = {r[0]-p[0], r[1]-p[1], r[2]-p[2]};
+        const double n0 = u[1]*w[2]-u[2]*w[1], n1 = u[2]*w[0]-u[0]*w[2], n2 = u[0]*w[1]-u[1]*w[0];
+        area += 0.5 * std::sqrt(n0*n0 + n1*n1 + n2*n2);
+    }
+    printf("  [post-hash] %-20s V=%-10zu F=%-10zu verts=%016llx faces=%016llx area=%.9g\n", stage, V, F,
+           (unsigned long long)hash_bytes(verts.data(), verts.size() * sizeof(float)),
+           (unsigned long long)hash_bytes(faces.data(), faces.size() * sizeof(int32_t)), area);
     fflush(stdout);
 }
 

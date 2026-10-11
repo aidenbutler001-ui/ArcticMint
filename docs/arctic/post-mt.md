@@ -163,3 +163,14 @@ This removes the 13-probe first-visit test and both flat tables (up to ~1.5 GB a
 | remesh_dc total (1 thr) | 284.1 s | 236.2 s |
 | front chain wall, legacy hole order, 4 thr | 136.3 s | 124.9 s |
 | peak RSS | 4.51 GB | 3.29 GB |
+
+### Update: `dual_grid_to_mesh` (stage 0, runs inside trellis-cli before the post stages)
+
+Called once from `trellis_cli.cpp` (and nowhere else), so the function-level change covers the CLI path. Vertex
+arithmetic is the same code (a lambda shared by both paths); the coordinate map is a `FlatU64Map` filled with
+`insert_max` (legacy `cmap[key] = i` keeps the LAST duplicate, the largest index does too); faces are built per fixed
+chunk of voxels and concatenated in chunk order. `tools/arctic-post/dualgrid_bench.cpp` builds a synthetic `ShapeOut`
+from a dump (parent-major order like the C2S output, optional duplicate coordinates) and compares byte for byte at
+1,2,4,7,16 threads: identical. 7.97M voxels at res 1024: legacy 3.3 s, new 4.5 s (1 thread) / 2.2 s (2) / 1.2 s (4).
+Small because the stage is cheap; forced single-thread runs are ~1 s slower than legacy (`TRELLIS_POST_LEGACY=1`
+restores it). Real shape-decoder features were not available in the cloud, so the features are random.

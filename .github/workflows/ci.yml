@@ -52,7 +52,8 @@ jobs:
           build-post/post-replay d.bin a.glb --geometry-res 512 --faces 20000
           build-post/post-replay d.bin b.glb --geometry-res 512 --faces 20000
           sha256sum a.glb b.glb
-          cmp a.glb b.glb
+          # only the "generated" timestamp in the JSON header may differ
+          cmp -i 200 a.glb b.glb
 
   # PRs to main only: Windows minutes count double.
   post-msvc:

@@ -1,3 +1,9 @@
+> **ArcticMint (Arctic)** is a private, standalone copy of
+> [pwilkin/trellis.cpp](https://github.com/pwilkin/trellis.cpp) by **Piotr Wilkin**, used under the MIT licence
+> (see `LICENSE`, copyright notice retained). It carries the Expiramental3d project's changes, starting with
+> multithreaded CPU post-processing (`tools/arctic-post/`, `src/post_parallel.*`) that gives byte-identical output.
+> Everything below is upstream's README, unchanged. Upstream fixes are merged in by hand from the `upstream` remote.
+
 # trellis.cpp
 
 A standalone, **GGML-based C++** implementation of Microsoft's

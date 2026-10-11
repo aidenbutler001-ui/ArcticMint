@@ -215,8 +215,12 @@ int main(int argc, char** argv) {
     } else {
         FILE* f = fopen(dump, "rb");
         if (!f) { fprintf(stderr, "cannot open %s\n", dump); return 1; }
-        if (fread(&V,4,1,f)+fread(&F,4,1,f)+fread(&Mv,4,1,f)+fread(&res,4,1,f) != 4 ||
-            V <= 0 || F <= 0 || Mv < 0 || res <= 0) return 1;
+        // One read per statement: the operands of '+' are unsequenced, so MSVC may read the header out of order.
+        bool hdr = fread(&V,4,1,f) == 1;
+        hdr = hdr && fread(&F,4,1,f) == 1;
+        hdr = hdr && fread(&Mv,4,1,f) == 1;
+        hdr = hdr && fread(&res,4,1,f) == 1;
+        if (!hdr || V <= 0 || F <= 0 || Mv < 0 || res <= 0) return 1;
         if (!geometry_res) geometry_res = res;
         verts.resize((size_t)V*3);
         faces.resize((size_t)F*3);

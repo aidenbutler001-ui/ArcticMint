@@ -98,9 +98,13 @@ Dumps (synthetic, `tools/arctic-post/gen_dump.py`): `d512a` (N=512 seed 1), `d51
 | remesh | a1c95f0f19bb550c / 61796f0f2a6bfa0d | f177eabec6fcda54 / 7da7497e77431f32 |
 | clean_mesh | (same as remesh, flipped 0) | (same as remesh) |
 | drop_components | b902f0840aa4139f / b2e48a8f4e163f82 | 981d7b21fc10c5ea / 94babccf23777da4 |
-| final GLB sha256[:16] | 4fe85a54c0cef47b | (front chain only) |
+| final GLB sha256[:16], `generated` timestamp zeroed | 55f73c86f49409fc | (front chain only) |
 
-d512b final GLB 7999c642c96bbadd. Full tables: see `docs/arctic/post-mt-golden.txt`.
+d512b final GLB (timestamp zeroed) fd4048a1a0b46d30. The raw `glb` lines in `post-mt-golden.txt` include the GLB's
+`"generated"` UTC timestamp, which changes on every run even for the original code; compare GLBs with that field zeroed
+(`pc-verify.ps1` does). With it masked, full-run GLBs are byte-identical at 1 and 4 threads and with
+`TRELLIS_POST_LEGACY=1` (also checked: two runs of the untouched original binary differ only in that timestamp).
+Full tables: see `docs/arctic/post-mt-golden.txt`.
 
 ## Timings (seconds, 4 vCPU container, d1024 = 4.98M raw faces -> 9.1M after remesh)
 

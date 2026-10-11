@@ -30,6 +30,10 @@
   continues to the GLB, which is slow but makes the replay run the real chain on the real raw mesh.
   Cleaned = trellis-cli --dump-post: stops after the CLI's remesh/clean, so the replay re-remeshes an
   already remeshed mesh (faster, less faithful).
+.PARAMETER StrictTail
+  Fail when the tail (decimate_qem onward, GLB) differs from legacy. Off by default: the GPU QEM decimation is
+  non-deterministic run to run even in the legacy code (seen on the PC 2026-10-11), and the multithreaded post code
+  ends before QEM, so tail differences are reported but do not fail the verdict.
 .PARAMETER FrontOnly
   Pass --stop-before-qem to post-replay (skips QEM/UV/GLB; much faster; no GLB comparison).
 .EXAMPLE
@@ -58,6 +62,7 @@ param(
     [int]$RunTimeoutMin = 90,
     [int]$BuildJobs = 8,
     [switch]$FrontOnly,
+    [switch]$StrictTail,
     [switch]$SkipBuild,
     [switch]$SkipDump,
     [switch]$SkipTests
@@ -589,9 +594,11 @@ try {
         }
         $verdict = 'PASS'
         if ($problems.Count -gt 0) { $verdict = 'FAIL' }
-        elseif ($tailProblems.Count -gt 0) { $verdict = 'FAIL (tail only)' }
+        elseif ($tailProblems.Count -gt 0) {
+            $verdict = if ($StrictTail) { 'FAIL (tail only)' } else { 'PASS (front exact; tail differs: GPU QEM is non-deterministic)' }
+        }
         [void]$results.Add([pscustomobject]@{ Asset = $name; Verdict = $verdict; Problems = $problems; TailProblems = $tailProblems; Data = $runData })
-        Write-Host ('    ' + $name + ': ' + $verdict) -ForegroundColor $(if ($verdict -eq 'PASS') { 'Green' } else { 'Red' })
+        Write-Host ('    ' + $name + ': ' + $verdict) -ForegroundColor $(if ($verdict -like 'PASS*') { 'Green' } else { 'Red' })
     }
 
     # ---- 6. report ----
@@ -644,7 +651,7 @@ try {
     $summary | ForEach-Object { Write-Host $_ }
 
     $allPass = $true
-    foreach ($rr in $results) { if ($rr.Verdict -ne 'PASS') { $allPass = $false } }
+    foreach ($rr in $results) { if ($rr.Verdict -notlike 'PASS*') { $allPass = $false } }
     if ($allPass) { Write-Host ''; Write-Host 'RESULT: PASS (all assets)' -ForegroundColor Green; $exitCode = 0 }
     else { Write-Host ''; Write-Host 'RESULT: FAIL (see above)' -ForegroundColor Red; $exitCode = 1 }
 }

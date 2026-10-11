@@ -4,6 +4,7 @@
 #include "meshoptimizer.h"
 #include "Simplify.h"
 #include "tri_bvh.h"
+#include "post_parallel.h"
 #include <climits>
 #include <cstdio>
 #include <cstdlib>
@@ -202,6 +203,7 @@ void decimate_cluster(const std::vector<float>& verts, int V, const std::vector<
 
 int weld_vertices(std::vector<float>& verts, std::vector<int32_t>& faces, std::vector<float>* colors3,
                   float step) {
+    if (!post::legacy()) return post::weld_vertices(verts, faces, colors3, step);   // Arctic: parallel, same output
     const int V = (int)verts.size() / 3;
     if (colors3 && colors3->size() != verts.size()) {   // guard: per-vertex colors out of sync
         fprintf(stderr, "  weld: colors/verts size mismatch (%zu vs %zu), ignoring colors\n",
@@ -251,6 +253,7 @@ int weld_vertices(std::vector<float>& verts, std::vector<int32_t>& faces, std::v
 }
 
 void clean_mesh(int V, std::vector<int32_t>& faces) {
+    if (!post::legacy() && faces.size() / 3 < (1u << 30)) return post::clean_mesh(V, faces);   // Arctic: same output
     (void)V;
     // 1. drop degenerate faces (a repeated vertex -> zero area, blocks collapse)
     {
@@ -399,6 +402,7 @@ void decimate_simplify(const std::vector<float>& verts, int V, const std::vector
 // reference reconstruction is a single watertight component; these floaters are pure junk
 // that spawn extra UV charts and visible specks. Compacts verts/faces in place.
 int drop_small_components(std::vector<float>& verts, std::vector<int32_t>& faces, float frac) {
+    if (!post::legacy()) return post::drop_small_components(verts, faces, frac);   // Arctic: same output
     const int V = (int)verts.size() / 3;
     const size_t F = faces.size() / 3;
     if (V == 0 || F == 0) return 0;

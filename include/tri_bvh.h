@@ -25,6 +25,7 @@ public:
     using BoxVisitor = bool (*)(void *, int32_t);
     bool visit_overlapping(const float bmin[3], const float bmax[3], BoxVisitor visit, void *context) const;
     bool empty() const { return nodes_.empty(); }
+    uint64_t debug_hash() const;   // hash of nodes + primitive order (TRELLIS_POST_HASH)
 
 private:
     struct Node {

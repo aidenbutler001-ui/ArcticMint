@@ -1,5 +1,6 @@
 #include "remesh_dc.h"
 #include "tri_bvh.h"
+#include "post_parallel.h"
 #include <algorithm>
 #include <atomic>
 #ifdef _MSC_VER
@@ -9,6 +10,7 @@
 #include <cstdlib>
 #include <cstdio>
 #include <functional>
+#include <memory>
 #include <stdexcept>
 #include <thread>
 #include <unordered_map>
@@ -32,16 +34,17 @@ inline uint64_t key3(int x, int y, int z) {
     return ((uint64_t)(uint32_t)x << 42) | ((uint64_t)(uint32_t)y << 21) | (uint32_t)z;
 }
 
-void parallel_for(int64_t n, const std::function<void(int64_t, int64_t)>& fn) {
-    const int nt = std::max(1u, std::thread::hardware_concurrency());
-    std::vector<std::thread> ts;
-    const int64_t chunk = (n + nt - 1) / nt;
-    for (int t = 0; t < nt; ++t) {
-        const int64_t b = t * chunk, e = std::min(n, b + chunk);
-        if (b >= e) break;
-        ts.emplace_back(fn, b, e);
-    }
-    for (auto& t : ts) t.join();
+// Arctic: dynamically scheduled chunks (TRELLIS_POST_THREADS workers); every caller
+// writes results by index, so the output is independent of the schedule.
+void parallel_for(int64_t n, const std::function<void(int64_t, int64_t)>& fn, int64_t grain = 256) {
+    post::parallel_for(n, grain, fn);
+}
+
+inline int popcount64(uint64_t v) {
+    v = v - ((v >> 1) & 0x5555555555555555ull);
+    v = (v & 0x3333333333333333ull) + ((v >> 2) & 0x3333333333333333ull);
+    v = (v + (v >> 4)) & 0x0f0f0f0f0f0f0f0full;
+    return (int)((v * 0x0101010101010101ull) >> 56);
 }
 
 }  // namespace
@@ -78,7 +81,7 @@ Mesh remesh_narrow_band_dc(const float* iverts, int64_t iV, const int32_t* iface
     {
         const int F = (int)iF;
         std::vector<std::vector<uint64_t>> parts;
-        const int hw = (int)std::max(1u, std::thread::hardware_concurrency());
+        const int hw = post::threads();
         // Each worker previously allocated a full res^3 candidate bitset.  At
         // res=1024 that is 128 MiB per worker, so a 32-thread CPU consumed ~4 GiB
         // here before any geometry/BVH memory.  Cap only the replication memory;
@@ -134,15 +137,28 @@ Mesh remesh_narrow_band_dc(const float* iverts, int64_t iV, const int32_t* iface
     // Active voxels: |UDF(center) - eps| < 0.87*cell (spec 27 §4.1).
     std::vector<int> acoord;
     {
-        std::vector<int64_t> cand_cells;
-        for (int64_t w = 0; w < (int64_t)cand.size(); ++w) {
-            uint64_t bits = cand[w];
-            while (bits) {
-                const int b = ctz64(bits);
-                bits &= bits - 1;
-                cand_cells.push_back((w << 6) | b);
+        // Candidate cells in linear order (parallel count + fill; same list as a serial scan).
+        const std::vector<int64_t> wb = post::fixed_chunks((int64_t)cand.size(), 1 << 14);
+        const int64_t nwc = (int64_t)wb.size() - 1;
+        std::vector<int64_t> woff((size_t)nwc + 1, 0);
+        post::parallel_tasks(nwc, [&](int64_t k) {
+            int64_t n = 0;
+            for (int64_t w = wb[(size_t)k]; w < wb[(size_t)k + 1]; ++w) n += popcount64(cand[(size_t)w]);
+            woff[(size_t)k + 1] = n;
+        });
+        for (int64_t k = 0; k < nwc; ++k) woff[(size_t)k + 1] += woff[(size_t)k];
+        std::vector<int64_t> cand_cells((size_t)woff[(size_t)nwc]);
+        post::parallel_tasks(nwc, [&](int64_t k) {
+            int64_t o = woff[(size_t)k];
+            for (int64_t w = wb[(size_t)k]; w < wb[(size_t)k + 1]; ++w) {
+                uint64_t bits = cand[(size_t)w];
+                while (bits) {
+                    const int b = ctz64(bits);
+                    bits &= bits - 1;
+                    cand_cells[(size_t)o++] = (w << 6) | b;
+                }
             }
-        }
+        });
         std::vector<uint8_t> act(cand_cells.size(), 0);
         parallel_for((int64_t)cand_cells.size(), [&](int64_t b, int64_t e) {
             for (int64_t i = b; i < e; ++i) {
@@ -157,13 +173,27 @@ Mesh remesh_narrow_band_dc(const float* iverts, int64_t iV, const int32_t* iface
                 if (std::fabs(f) < keep) act[i] = 1;
             }
         });
-        for (size_t i = 0; i < cand_cells.size(); ++i) {
-            if (!act[i]) continue;
-            const int64_t c = cand_cells[i];
-            acoord.push_back((int)(c / ((int64_t)res * res)));
-            acoord.push_back((int)((c / res) % res));
-            acoord.push_back((int)(c % res));
-        }
+        const std::vector<int64_t> ab = post::fixed_chunks((int64_t)act.size(), 1 << 18);
+        const int64_t nac = (int64_t)ab.size() - 1;
+        std::vector<int64_t> aoff((size_t)nac + 1, 0);
+        post::parallel_tasks(nac, [&](int64_t k) {
+            int64_t n = 0;
+            for (int64_t i = ab[(size_t)k]; i < ab[(size_t)k + 1]; ++i) n += act[(size_t)i];
+            aoff[(size_t)k + 1] = n;
+        });
+        for (int64_t k = 0; k < nac; ++k) aoff[(size_t)k + 1] += aoff[(size_t)k];
+        acoord.resize((size_t)aoff[(size_t)nac] * 3);
+        post::parallel_tasks(nac, [&](int64_t k) {
+            int64_t o = aoff[(size_t)k];
+            for (int64_t i = ab[(size_t)k]; i < ab[(size_t)k + 1]; ++i) {
+                if (!act[(size_t)i]) continue;
+                const int64_t c = cand_cells[(size_t)i];
+                acoord[(size_t)(3*o)]   = (int)(c / ((int64_t)res * res));
+                acoord[(size_t)(3*o+1)] = (int)((c / res) % res);
+                acoord[(size_t)(3*o+2)] = (int)(c % res);
+                ++o;
+            }
+        });
         cand.clear(); cand.shrink_to_fit();
     }
     const int64_t Na = (int64_t)acoord.size() / 3;
@@ -172,21 +202,92 @@ Mesh remesh_narrow_band_dc(const float* iverts, int64_t iV, const int32_t* iface
         return out;
     }
 
-    std::unordered_map<uint64_t, int> vox;
-    vox.reserve((size_t)Na * 2);
-    for (int64_t i = 0; i < Na; ++i) vox.emplace(key3(acoord[3*i], acoord[3*i+1], acoord[3*i+2]), (int)i);
+    // Arctic: sorted-key flat tables replace the node-based hash maps. acoord is in
+    // ascending (x, y, z) = ascending key3 order, which lets the vertex numbering of
+    // the legacy first-occurrence scan be reproduced without any hash build.
+    const bool fast = !post::legacy();
+    std::unordered_map<uint64_t, int> vox;       // legacy only
+    std::unordered_map<uint64_t, int> vmap;      // legacy only
+    post::FlatU64Map fvox, fvmap;                // fast path
+    auto vox_id = [&](uint64_t k) -> int {
+        if (fast) return fvox.find(k);
+        auto it = vox.find(k);
+        return it == vox.end() ? -1 : it->second;
+    };
+    auto vmap_id = [&](int x, int y, int z) -> int {
+        if (fast) return fvmap.find(key3(x, y, z));
+        auto it = vmap.find(key3(x, y, z));
+        return it == vmap.end() ? -1 : it->second;
+    };
 
     // f = UDF - eps at the grid VERTICES (corner mapping v/res, spec 27 §4.3).
     std::vector<int> vcoord;
-    std::unordered_map<uint64_t, int> vmap;
-    vmap.reserve((size_t)Na * 3);
-    for (int64_t i = 0; i < Na; ++i)
-        for (int dx = 0; dx < 2; ++dx) for (int dy = 0; dy < 2; ++dy) for (int dz = 0; dz < 2; ++dz) {
-            const int x = acoord[3*i] + dx, y = acoord[3*i+1] + dy, z = acoord[3*i+2] + dz;
-            if (vmap.emplace(key3(x, y, z), (int)(vcoord.size() / 3)).second) {
-                vcoord.push_back(x); vcoord.push_back(y); vcoord.push_back(z);
+    if (!fast) {
+        vox.reserve((size_t)Na * 2);
+        for (int64_t i = 0; i < Na; ++i) vox.emplace(key3(acoord[3*i], acoord[3*i+1], acoord[3*i+2]), (int)i);
+        vmap.reserve((size_t)Na * 3);
+        for (int64_t i = 0; i < Na; ++i)
+            for (int dx = 0; dx < 2; ++dx) for (int dy = 0; dy < 2; ++dy) for (int dz = 0; dz < 2; ++dz) {
+                const int x = acoord[3*i] + dx, y = acoord[3*i+1] + dy, z = acoord[3*i+2] + dz;
+                if (vmap.emplace(key3(x, y, z), (int)(vcoord.size() / 3)).second) {
+                    vcoord.push_back(x); vcoord.push_back(y); vcoord.push_back(z);
+                }
             }
-        }
+    } else {
+        fvox.init(Na);
+        parallel_for(Na, [&](int64_t b, int64_t e) {
+            for (int64_t i = b; i < e; ++i) fvox.insert(key3(acoord[3*i], acoord[3*i+1], acoord[3*i+2]), (int32_t)i);
+        }, 1 << 12);
+        // The legacy scan visits voxels in index order, corners (dx, dy, dz) in nested order, and
+        // numbers a grid vertex at its first visit. A vertex is first visited by the existing voxel
+        // that owns it with the smallest coordinates, i.e. corner d of voxel c is NEW iff no voxel
+        // c+o exists for a lexicographically negative offset o with d-o in {0,1}^3.
+        struct Off { int o[3]; };
+        std::vector<Off> neg;   // the 13 lexicographically negative offsets
+        for (int ox = -1; ox <= 1; ++ox) for (int oy = -1; oy <= 1; ++oy) for (int oz = -1; oz <= 1; ++oz)
+            if (ox < 0 || (ox == 0 && (oy < 0 || (oy == 0 && oz < 0)))) neg.push_back({{ox, oy, oz}});
+        std::vector<uint8_t> newmask((size_t)Na, 0);
+        parallel_for(Na, [&](int64_t b, int64_t e) {
+            for (int64_t i = b; i < e; ++i) {
+                const int cx = acoord[3*i], cy = acoord[3*i+1], cz = acoord[3*i+2];
+                uint8_t isnew = 0xff;
+                for (const Off& of : neg) {
+                    if (fvox.find(key3(cx + of.o[0], cy + of.o[1], cz + of.o[2])) < 0) continue;
+                    for (int d = 0; d < 8; ++d) {
+                        const int dx = d >> 2, dy = (d >> 1) & 1, dz = d & 1;
+                        const int ex = dx - of.o[0], ey = dy - of.o[1], ez = dz - of.o[2];
+                        if (ex >= 0 && ex <= 1 && ey >= 0 && ey <= 1 && ez >= 0 && ez <= 1) isnew &= (uint8_t)~(1u << d);
+                    }
+                }
+                newmask[(size_t)i] = isnew;
+            }
+        }, 1 << 12);
+        const std::vector<int64_t> vb = post::fixed_chunks(Na, 1 << 16);
+        const int64_t nvc = (int64_t)vb.size() - 1;
+        std::vector<int64_t> voff((size_t)nvc + 1, 0);
+        post::parallel_tasks(nvc, [&](int64_t k) {
+            int64_t n = 0;
+            for (int64_t i = vb[(size_t)k]; i < vb[(size_t)k + 1]; ++i) n += popcount64(newmask[(size_t)i]);
+            voff[(size_t)k + 1] = n;
+        });
+        for (int64_t k = 0; k < nvc; ++k) voff[(size_t)k + 1] += voff[(size_t)k];
+        const int64_t nv_total = voff[(size_t)nvc];
+        vcoord.resize((size_t)nv_total * 3);
+        fvmap.init(nv_total);
+        post::parallel_tasks(nvc, [&](int64_t k) {
+            int64_t id = voff[(size_t)k];
+            for (int64_t i = vb[(size_t)k]; i < vb[(size_t)k + 1]; ++i) {
+                const uint8_t m = newmask[(size_t)i];
+                for (int d = 0; d < 8; ++d) {
+                    if (!((m >> d) & 1)) continue;
+                    const int x = acoord[3*i] + (d >> 2), y = acoord[3*i+1] + ((d >> 1) & 1), z = acoord[3*i+2] + (d & 1);
+                    vcoord[(size_t)(3*id)] = x; vcoord[(size_t)(3*id+1)] = y; vcoord[(size_t)(3*id+2)] = z;
+                    fvmap.insert(key3(x, y, z), (int32_t)id);
+                    ++id;
+                }
+            }
+        });
+    }
     const int64_t Nv = (int64_t)vcoord.size() / 3;
     std::vector<float> fvert((size_t)Nv);
     parallel_for(Nv, [&](int64_t b, int64_t e) {
@@ -202,8 +303,8 @@ Mesh remesh_narrow_band_dc(const float* iverts, int64_t iV, const int32_t* iface
         }
     });
     auto fval = [&](int x, int y, int z) -> float {
-        auto it = vmap.find(key3(x, y, z));
-        return it == vmap.end() ? 1e9f : fvert[it->second];
+        const int id = vmap_id(x, y, z);
+        return id < 0 ? 1e9f : fvert[id];
     };
 
     if (std::getenv("TRELLIS_REMESH_TETS")) {
@@ -254,7 +355,7 @@ Mesh remesh_narrow_band_dc(const float* iverts, int64_t iV, const int32_t* iface
             const int x = acoord[3*i], y = acoord[3*i+1], z = acoord[3*i+2];
             int corner[8];
             for (int mask = 0; mask < 8; ++mask)
-                corner[mask] = vmap.at(key3(x + (mask & 1), y + ((mask >> 1) & 1), z + ((mask >> 2) & 1)));
+                corner[mask] = vmap_id(x + (mask & 1), y + ((mask >> 1) & 1), z + ((mask >> 2) & 1));
             for (const auto& perm : PERM) {
                 const int tet[4] = {corner[0], corner[1 << perm[0]],
                                     corner[(1 << perm[0]) | (1 << perm[1])], corner[7]};
@@ -299,15 +400,20 @@ Mesh remesh_narrow_band_dc(const float* iverts, int64_t iV, const int32_t* iface
             const int vx = acoord[3*i], vy = acoord[3*i+1], vz = acoord[3*i+2];
             double sum[3] = {0, 0, 0};
             int cnt = 0;
+            float fc[8];   // field at the voxel's 8 corners, index (dx<<2)|(dy<<1)|dz (every one exists)
+            for (int d = 0; d < 8; ++d) fc[d] = fval(vx + (d >> 2), vy + ((d >> 1) & 1), vz + (d & 1));
             for (int axis = 0; axis < 3; ++axis)
                 for (int u = 0; u < 2; ++u) for (int v = 0; v < 2; ++v) {
                     int a0[3] = {vx, vy, vz}, a1[3];
-                    a0[(axis + 1) % 3] += u;
-                    a0[(axis + 2) % 3] += v;
+                    int o0[3] = {0, 0, 0};
+                    o0[(axis + 1) % 3] += u;
+                    o0[(axis + 2) % 3] += v;
+                    a0[0] += o0[0]; a0[1] += o0[1]; a0[2] += o0[2];
                     a1[0] = a0[0]; a1[1] = a0[1]; a1[2] = a0[2];
                     a1[axis] += 1;
-                    const float v1 = fval(a0[0], a0[1], a0[2]);
-                    const float v2 = fval(a1[0], a1[1], a1[2]);
+                    const int i1 = (o0[0] << 2) | (o0[1] << 1) | o0[2];
+                    const float v1 = fc[i1];
+                    const float v2 = fc[i1 | (4 >> axis)];
                     const bool c12 = v1 < 0 && v2 >= 0, c21 = v1 >= 0 && v2 < 0;
                     if (c12 || c21) {
                         const float t = -v1 / (v2 - v1);
@@ -332,6 +438,9 @@ Mesh remesh_narrow_band_dc(const float* iverts, int64_t iV, const int32_t* iface
         {{0,0,0}, {1,0,0}, {1,0,1}, {0,0,1}},
         {{0,0,0}, {0,1,0}, {1,1,0}, {1,0,0}},
     };
+    static const int S1N[6] = {0, 1, 2, 0, 2, 3};
+    static const int S1P[6] = {0, 2, 1, 0, 3, 2};
+    if (!fast) {
     std::vector<int32_t> qfaces;
     qfaces.reserve((size_t)Na * 6);
     std::vector<uint8_t> used((size_t)Na, 0);
@@ -343,13 +452,11 @@ Mesh remesh_narrow_band_dc(const float* iverts, int64_t iV, const int32_t* iface
             int q[4];
             bool ok = true;
             for (int k = 0; k < 4 && ok; ++k) {
-                auto it = vox.find(key3(vx + OFF[axis][k][0], vy + OFF[axis][k][1], vz + OFF[axis][k][2]));
-                if (it == vox.end()) ok = false;
-                else q[k] = it->second;
+                const int id = vox_id(key3(vx + OFF[axis][k][0], vy + OFF[axis][k][1], vz + OFF[axis][k][2]));
+                if (id < 0) ok = false;
+                else q[k] = id;
             }
             if (!ok) continue;
-            static const int S1N[6] = {0, 1, 2, 0, 2, 3};
-            static const int S1P[6] = {0, 2, 1, 0, 3, 2};
             const int* sp = dir > 0 ? S1P : S1N;
             for (int k = 0; k < 6; ++k) qfaces.push_back(q[sp[k]]);
             for (int k = 0; k < 4; ++k) used[q[k]] = 1;
@@ -369,6 +476,70 @@ Mesh remesh_narrow_band_dc(const float* iverts, int64_t iV, const int32_t* iface
         }
     out.faces.resize(qfaces.size());
     for (size_t k = 0; k < qfaces.size(); ++k) out.faces[k] = remap[qfaces[k]];
+    } else {
+        // Arctic: per-chunk quad lists (fixed chunking) concatenated in chunk order = legacy face order.
+        const std::vector<int64_t> qb = post::fixed_chunks(Na, 1 << 14);
+        const int64_t nqc = (int64_t)qb.size() - 1;
+        std::vector<std::vector<int32_t>> qparts((size_t)nqc);
+        std::unique_ptr<std::atomic<uint8_t>[]> used(new std::atomic<uint8_t>[(size_t)Na]);
+        parallel_for(Na, [&](int64_t b, int64_t e) {
+            for (int64_t i = b; i < e; ++i) used[(size_t)i].store(0, std::memory_order_relaxed);
+        }, 1 << 16);
+        post::parallel_tasks(nqc, [&](int64_t k) {
+            std::vector<int32_t>& qf = qparts[(size_t)k];
+            for (int64_t i = qb[(size_t)k]; i < qb[(size_t)k + 1]; ++i) {
+                const int vx = acoord[3*i], vy = acoord[3*i+1], vz = acoord[3*i+2];
+                for (int axis = 0; axis < 3; ++axis) {
+                    const int dir = owned[3*i + axis];
+                    if (!dir) continue;
+                    int q[4];
+                    bool ok = true;
+                    for (int c = 0; c < 4 && ok; ++c) {
+                        const int id = fvox.find(key3(vx + OFF[axis][c][0], vy + OFF[axis][c][1], vz + OFF[axis][c][2]));
+                        if (id < 0) ok = false;
+                        else q[c] = id;
+                    }
+                    if (!ok) continue;
+                    const int* sp = dir > 0 ? S1P : S1N;
+                    for (int c = 0; c < 6; ++c) qf.push_back(q[sp[c]]);
+                    for (int c = 0; c < 4; ++c) used[(size_t)q[c]].store(1, std::memory_order_relaxed);
+                }
+            }
+        });
+        std::vector<int64_t> qoff((size_t)nqc + 1, 0);
+        for (int64_t k = 0; k < nqc; ++k) qoff[(size_t)k + 1] = qoff[(size_t)k] + (int64_t)qparts[(size_t)k].size();
+        if (qoff[(size_t)nqc] == 0) return out;
+
+        const std::vector<int64_t> ub = post::fixed_chunks(Na, 1 << 16);
+        const int64_t nuc = (int64_t)ub.size() - 1;
+        std::vector<int64_t> uoff((size_t)nuc + 1, 0);
+        post::parallel_tasks(nuc, [&](int64_t k) {
+            int64_t n = 0;
+            for (int64_t i = ub[(size_t)k]; i < ub[(size_t)k + 1]; ++i) n += used[(size_t)i].load(std::memory_order_relaxed);
+            uoff[(size_t)k + 1] = n;
+        });
+        for (int64_t k = 0; k < nuc; ++k) uoff[(size_t)k + 1] += uoff[(size_t)k];
+        std::vector<int32_t> remap((size_t)Na, -1);
+        out.verts.resize((size_t)uoff[(size_t)nuc] * 3);
+        post::parallel_tasks(nuc, [&](int64_t k) {
+            int64_t w = uoff[(size_t)k];
+            for (int64_t i = ub[(size_t)k]; i < ub[(size_t)k + 1]; ++i)
+                if (used[(size_t)i].load(std::memory_order_relaxed)) {
+                    remap[(size_t)i] = (int32_t)w;
+                    out.verts[(size_t)(3*w)]   = (dual[3*i]   / res - 0.5f) * scale;
+                    out.verts[(size_t)(3*w+1)] = (dual[3*i+1] / res - 0.5f) * scale;
+                    out.verts[(size_t)(3*w+2)] = (dual[3*i+2] / res - 0.5f) * scale;
+                    ++w;
+                }
+        });
+        out.faces.resize((size_t)qoff[(size_t)nqc]);
+        post::parallel_tasks(nqc, [&](int64_t k) {
+            const std::vector<int32_t>& qf = qparts[(size_t)k];
+            int32_t* dst = out.faces.data() + qoff[(size_t)k];
+            for (size_t c = 0; c < qf.size(); ++c) dst[c] = remap[(size_t)qf[c]];
+            std::vector<int32_t>().swap(qparts[(size_t)k]);
+        });
+    }
 
     if (std::getenv("TRELLIS_DIAG_DC_AMBIGUITY")) {
         int64_t ambiguous = 0;
@@ -377,7 +548,7 @@ Mesh remesh_narrow_band_dc(const float* iverts, int64_t iV, const int32_t* iface
             for (int axis = 0; axis < 3; ++axis) {
                 int corner[3] = {base[0], base[1], base[2]};
                 ++corner[axis];
-                if (vox.find(key3(corner[0], corner[1], corner[2])) == vox.end()) continue;
+                if (vox_id(key3(corner[0], corner[1], corner[2])) < 0) continue;
                 const int u = (axis + 1) % 3, v = (axis + 2) % 3;
                 auto sign = [&](int du, int dv) {
                     int p[3] = {corner[0], corner[1], corner[2]};

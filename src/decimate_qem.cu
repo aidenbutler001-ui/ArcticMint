@@ -13,6 +13,7 @@
 #include <vector>
 #include <cstdint>
 #include <cstdio>
+#include <cstdlib>
 #include <cmath>
 #include <limits>
 
@@ -36,6 +37,7 @@
   #define gpuGetLastError         hipGetLastError
   #define gpuGetErrorString       hipGetErrorString
   #define gpuGetDeviceCount       hipGetDeviceCount
+  #define gpuGetDevice            hipGetDevice
 #else
   #include <cuda_runtime.h>
   #include <cub/cub.cuh>
@@ -56,6 +58,7 @@
   #define gpuGetLastError         cudaGetLastError
   #define gpuGetErrorString       cudaGetErrorString
   #define gpuGetDeviceCount       cudaGetDeviceCount
+  #define gpuGetDevice            cudaGetDevice
 #endif
 
 // ROCm's clang marks hip runtime calls [[nodiscard]]; the buffer teardown paths below
@@ -416,6 +419,15 @@ bool decimate_qem_gpu(const std::vector<float>& in_verts, int V0,
     if (gpuGetDeviceCount(&devcount) != gpuSuccess || devcount <= 0) return false;
     if (V0 <= 0 || F0 <= 0) return false;
     if (F0 <= target_faces) { ov = in_verts; of = in_faces; return true; }
+
+    // TRELLIS_VERBOSE=1: report which CUDA device this thread is on. This function never calls
+    // cudaSetDevice, so it runs on whatever device the calling thread last used (ggml sets it
+    // during compute). With CUDA_DEVICE_ORDER=PCI_BUS_ID this should equal the --gpu index.
+    if (const char* v = std::getenv("TRELLIS_VERBOSE")) {
+        int dev = -1;
+        if (std::atoi(v) > 0 && gpuGetDevice(&dev) == gpuSuccess)
+            fprintf(stderr, "[decimate_qem_gpu] current device %d (devices visible: %d)\n", dev, devcount);
+    }
 
     gpuStream_t s;
     if (gpuStreamCreate(&s) != gpuSuccess) return false;

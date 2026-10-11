@@ -228,6 +228,13 @@ function Ensure-Msvc {
             $env:PATH = $vsNinja + ';' + $env:PATH
         }
     }
+    # VS also ships CMake; add it if cmake is not otherwise installed.
+    if (-not (Find-Tool 'cmake.exe')) {
+        $vsCMake = Join-Path $inst 'Common7\IDE\CommonExtensions\Microsoft\CMake\CMake\bin'
+        if (Test-Path -LiteralPath (Join-Path $vsCMake 'cmake.exe')) {
+            $env:PATH = $vsCMake + ';' + $env:PATH
+        }
+    }
     Write-Info ('cl.exe: ' + (Find-Tool 'cl.exe'))
 }
 
@@ -377,14 +384,16 @@ try {
 
     # ---- 1. preflight ----
     Write-Step '1. preflight'
-    foreach ($t in @('git.exe', 'cmake.exe', 'nvidia-smi.exe')) {
+    foreach ($t in @('git.exe', 'nvidia-smi.exe')) {
         $path = Find-Tool $t
         if (-not $path) { Fail ($t + ' not found on PATH') }
         Write-Info ($t + ': ' + $path)
     }
     if (-not $SkipBuild -or -not $SkipTests) {
-        Ensure-Msvc
+        Ensure-Msvc     # also adds VS's own CMake and Ninja to PATH when they are not installed separately
         if (-not (Find-Tool 'ninja.exe')) { Fail 'ninja.exe not found (install Ninja or Visual Studio CMake tools)' }
+        if (-not (Find-Tool 'cmake.exe')) { Fail 'cmake.exe not found (install CMake or Visual Studio CMake tools)' }
+        Write-Info ('cmake.exe: ' + (Find-Tool 'cmake.exe'))
     }
     if (-not $SkipBuild) {
         $nvcc = Find-Tool 'nvcc.exe'

@@ -56,10 +56,12 @@ What it does, in order:
    used, or more than `-BusyUtilPct` (15) % utilization. Windows (WDDM) often hides other clients from `nvidia-smi`,
    so memory and utilization are checked too; raise the two thresholds if the monitor on that card trips them. The check
    repeats before every run.
-5. `trellis-cli -i <img> -o <out.glb> -m <models> --res 1024 --gpu 1 --seed 1 -v --dump-post <dump>` per image.
-   `-DumpMode Raw` uses `TRELLIS_DUMP_POST` instead (raw mesh, the full CLI run continues to the GLB, much slower,
-   but replays the real chain and logs the CLI's own stage hashes). Default `Cleaned` stops after the CLI's remesh, so
-   the replay re-remeshes an already remeshed mesh; fine for a same-output check, not a faithful timing.
+5. `trellis-cli -i <img> -o <out.glb> -m <models> --res 1024 --gpu 1 --seed 1 -v` per image with
+   `CUDA_DEVICE_ORDER=PCI_BUS_ID` and `TRELLIS_DUMP_POST=<dump>` (default `-DumpMode Raw`): the dump is the raw decoded
+   mesh (after the centroid `fill_holes`, before weld), the full CLI run continues to its GLB (several minutes per
+   asset), and with `TRELLIS_POST_HASH=1` the CLI logs its own stage hashes too. `-DumpMode Cleaned` uses
+   `--dump-post` instead: it stops after the CLI's remesh, so the replay re-remeshes an already remeshed mesh
+   (faster, but not the real chain).
 6. `post-replay <dump> <glb> --geometry-res 1024 --band 2 --faces 300000 --no-audit` per image, with
    `TRELLIS_POST_HASH=1 TRELLIS_POST_TIMING=1 TRELLIS_VERBOSE=1` and `CUDA_VISIBLE_DEVICES=<gpu>`, three times:
    `TRELLIS_POST_THREADS=1`, `=24` (`-HighThreads`), and `TRELLIS_POST_LEGACY=1`. `post-replay` never runs ggml, so
@@ -77,4 +79,4 @@ are byte-identical at 1 and 4 threads and with `TRELLIS_POST_LEGACY=1`).
 
 Needs: Windows 10/11, Visual Studio Build Tools (C++ x64), CMake, Ninja (or the one VS ships), a CUDA toolkit with its
 bin dir on PATH or `CUDA_PATH`, git, ~15 GB free disk (build + ggml + two dumps of 0.3-0.6 GB), and an idle GPU 1.
-Typical run time: build 20-40 min, then ~10-15 min per asset in `Cleaned` mode.
+Typical run time: build 20-40 min, then roughly 25-40 min per asset in the default `Raw` mode (full CLI run plus three replays).

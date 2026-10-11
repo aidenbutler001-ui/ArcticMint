@@ -14,7 +14,7 @@
        on Windows): trellis-cli, post-replay and the CPU-only tests. Run the tests. Then build and run
        the standalone tools/arctic-post tests (post-equiv-test) with MSVC.
     3. Refuse to continue if anything else is using the chosen GPU (default index 1, nvidia-smi order).
-    4. trellis-cli --res 1024 --dump-post for each phase0 image (CUDA_DEVICE_ORDER=PCI_BUS_ID, --gpu 1).
+    4. trellis-cli --res 1024 (raw dump via TRELLIS_DUMP_POST; -DumpMode Cleaned uses --dump-post) for each phase0 image (CUDA_DEVICE_ORDER=PCI_BUS_ID, --gpu 1).
     5. post-replay on each dump with TRELLIS_POST_HASH=1 at 1 thread, at 24 threads, and with
        TRELLIS_POST_LEGACY=1; compare per-stage hashes; time every run; write summary.md / summary.csv /
        hashes.csv with PASS/FAIL per asset.
@@ -26,9 +26,10 @@
 .PARAMETER Gpu
   GPU index as nvidia-smi / CUDA_DEVICE_ORDER=PCI_BUS_ID numbers it (default 1 = RTX 4070 SUPER).
 .PARAMETER DumpMode
-  Cleaned = trellis-cli --dump-post (stops after the CLI's remesh/clean; replay then re-remeshes that
-  already remeshed mesh). Raw = TRELLIS_DUMP_POST (raw mesh, the full CLI run continues to the GLB: slow,
-  but replays the real chain and also cross-checks the CLI's own stage hashes).
+  Raw (default) = TRELLIS_DUMP_POST: the raw decoded mesh (after fill_holes, before weld); the full CLI run
+  continues to the GLB, which is slow but makes the replay run the real chain on the real raw mesh.
+  Cleaned = trellis-cli --dump-post: stops after the CLI's remesh/clean, so the replay re-remeshes an
+  already remeshed mesh (faster, less faithful).
 .PARAMETER FrontOnly
   Pass --stop-before-qem to post-replay (skips QEM/UV/GLB; much faster; no GLB comparison).
 .EXAMPLE
@@ -51,7 +52,7 @@ param(
     [int]$Seed = 1,
     [string]$CudaArch = '86;89',
     [ValidateSet('Cleaned', 'Raw')]
-    [string]$DumpMode = 'Cleaned',
+    [string]$DumpMode = 'Raw',
     [int]$BusyMemMiB = 3000,
     [int]$BusyUtilPct = 15,
     [int]$RunTimeoutMin = 90,

@@ -61,6 +61,57 @@ inline int popcount64(uint64_t v) {
     return (int)((v * 0x0101010101010101ull) >> 56);
 }
 
+// Arctic: occupancy bitset over a dim^3 grid with a per-word prefix popcount, so "does cell
+// (x,y,z) exist, and what is its rank among the set cells in linear order" costs one bit test
+// and one popcount, with no hashing. Voxel ids are exactly that rank (acoord is in linear order).
+struct DenseSet {
+    int64_t dim = 0, nwords = 0;
+    std::unique_ptr<std::atomic<uint64_t>[]> bits;
+    std::vector<uint32_t> pre;   // pre[w] = set bits in words [0, w)
+    void init(int64_t d) {
+        dim = d;
+        nwords = (d * d * d + 63) / 64;
+        bits.reset(new std::atomic<uint64_t>[(size_t)nwords]);
+        post::parallel_for(nwords, 1 << 16, [&](int64_t b, int64_t e) {
+            for (int64_t w = b; w < e; ++w) bits[(size_t)w].store(0, std::memory_order_relaxed);
+        });
+    }
+    int64_t index(int x, int y, int z) const { return ((int64_t)x * dim + y) * dim + z; }
+    void set(int64_t i) { bits[(size_t)(i >> 6)].fetch_or(1ull << (i & 63), std::memory_order_relaxed); }
+    int64_t finalize();   // builds pre[]; returns the number of set cells
+    int find(int x, int y, int z) const {   // rank, or -1 if absent / outside the grid
+        if ((unsigned)x >= (unsigned)dim || (unsigned)y >= (unsigned)dim || (unsigned)z >= (unsigned)dim) return -1;
+        const int64_t i = index(x, y, z);
+        const uint64_t w = bits[(size_t)(i >> 6)].load(std::memory_order_relaxed);
+        if (!((w >> (i & 63)) & 1)) return -1;
+        return (int)(pre[(size_t)(i >> 6)] + popcount64(w & ((1ull << (i & 63)) - 1)));
+    }
+};
+
+int64_t DenseSet::finalize() {
+    const std::vector<int64_t> cb = post::fixed_chunks(nwords, 1 << 16);
+    const int64_t nc = (int64_t)cb.size() - 1;
+    std::vector<int64_t> off((size_t)nc + 1, 0);
+    post::parallel_tasks(nc, [&](int64_t k) {
+        int64_t n = 0;
+        for (int64_t w = cb[(size_t)k]; w < cb[(size_t)k + 1]; ++w) n += popcount64(bits[(size_t)w].load(std::memory_order_relaxed));
+        off[(size_t)k + 1] = n;
+    });
+    for (int64_t k = 0; k < nc; ++k) off[(size_t)k + 1] += off[(size_t)k];
+    if (off[(size_t)nc] >= (int64_t)0xffffffffll) throw std::runtime_error("remesh: too many cells for the rank table");
+    pre.assign((size_t)nwords + 1, 0);
+    post::parallel_tasks(nc, [&](int64_t k) {
+        int64_t run = off[(size_t)k];
+        for (int64_t w = cb[(size_t)k]; w < cb[(size_t)k + 1]; ++w) {
+            pre[(size_t)w] = (uint32_t)run;
+            run += popcount64(bits[(size_t)w].load(std::memory_order_relaxed));
+        }
+    });
+    pre[(size_t)nwords] = (uint32_t)off[(size_t)nc];
+    return off[(size_t)nc];
+}
+
+
 }  // namespace
 
 Mesh remesh_narrow_band_dc(const float* iverts, int64_t iV, const int32_t* ifaces, int64_t iF,
@@ -225,14 +276,14 @@ Mesh remesh_narrow_band_dc(const float* iverts, int64_t iV, const int32_t* iface
     const bool fast = !post::legacy();
     std::unordered_map<uint64_t, int> vox;       // legacy only
     std::unordered_map<uint64_t, int> vmap;      // legacy only
-    post::FlatU64Map fvox, fvmap;                // fast path
-    auto vox_id = [&](uint64_t k) -> int {
-        if (fast) return fvox.find(k);
-        auto it = vox.find(k);
+    DenseSet dvox, dvmap;                        // fast path: occupancy + rank, no hashing
+    auto vox_id = [&](int x, int y, int z) -> int {
+        if (fast) return dvox.find(x, y, z);
+        auto it = vox.find(key3(x, y, z));
         return it == vox.end() ? -1 : it->second;
     };
     auto vmap_id = [&](int x, int y, int z) -> int {
-        if (fast) return fvmap.find(key3(x, y, z));
+        if (fast) return dvmap.find(x, y, z);
         auto it = vmap.find(key3(x, y, z));
         return it == vmap.end() ? -1 : it->second;
     };
@@ -251,55 +302,35 @@ Mesh remesh_narrow_band_dc(const float* iverts, int64_t iV, const int32_t* iface
                 }
             }
     } else {
-        fvox.init(Na);
+        // Voxel id = rank among active cells (acoord is in linear order). Grid vertices are numbered by
+        // rank in linear vertex order instead of first visit; ids only index fvert, so the output is
+        // unchanged.
+        dvox.init(res);
         parallel_for(Na, [&](int64_t b, int64_t e) {
-            for (int64_t i = b; i < e; ++i) fvox.insert(key3(acoord[3*i], acoord[3*i+1], acoord[3*i+2]), (int32_t)i);
+            for (int64_t i = b; i < e; ++i) dvox.set(dvox.index(acoord[3*i], acoord[3*i+1], acoord[3*i+2]));
         }, 1 << 12);
-        // The legacy scan visits voxels in index order, corners (dx, dy, dz) in nested order, and
-        // numbers a grid vertex at its first visit. A vertex is first visited by the existing voxel
-        // that owns it with the smallest coordinates, i.e. corner d of voxel c is NEW iff no voxel
-        // c+o exists for a lexicographically negative offset o with d-o in {0,1}^3.
-        struct Off { int o[3]; };
-        std::vector<Off> neg;   // the 13 lexicographically negative offsets
-        for (int ox = -1; ox <= 1; ++ox) for (int oy = -1; oy <= 1; ++oy) for (int oz = -1; oz <= 1; ++oz)
-            if (ox < 0 || (ox == 0 && (oy < 0 || (oy == 0 && oz < 0)))) neg.push_back({{ox, oy, oz}});
-        std::vector<uint8_t> newmask((size_t)Na, 0);
+        dvox.finalize();
+        dvmap.init((int64_t)res + 1);
         parallel_for(Na, [&](int64_t b, int64_t e) {
-            for (int64_t i = b; i < e; ++i) {
-                const int cx = acoord[3*i], cy = acoord[3*i+1], cz = acoord[3*i+2];
-                uint8_t isnew = 0xff;
-                for (const Off& of : neg) {
-                    if (fvox.find(key3(cx + of.o[0], cy + of.o[1], cz + of.o[2])) < 0) continue;
-                    for (int d = 0; d < 8; ++d) {
-                        const int dx = d >> 2, dy = (d >> 1) & 1, dz = d & 1;
-                        const int ex = dx - of.o[0], ey = dy - of.o[1], ez = dz - of.o[2];
-                        if (ex >= 0 && ex <= 1 && ey >= 0 && ey <= 1 && ez >= 0 && ez <= 1) isnew &= (uint8_t)~(1u << d);
-                    }
-                }
-                newmask[(size_t)i] = isnew;
-            }
+            for (int64_t i = b; i < e; ++i)
+                for (int d = 0; d < 8; ++d)
+                    dvmap.set(dvmap.index(acoord[3*i] + (d >> 2), acoord[3*i+1] + ((d >> 1) & 1), acoord[3*i+2] + (d & 1)));
         }, 1 << 12);
-        const std::vector<int64_t> vb = post::fixed_chunks(Na, 1 << 16);
-        const int64_t nvc = (int64_t)vb.size() - 1;
-        std::vector<int64_t> voff((size_t)nvc + 1, 0);
-        post::parallel_tasks(nvc, [&](int64_t k) {
-            int64_t n = 0;
-            for (int64_t i = vb[(size_t)k]; i < vb[(size_t)k + 1]; ++i) n += popcount64(newmask[(size_t)i]);
-            voff[(size_t)k + 1] = n;
-        });
-        for (int64_t k = 0; k < nvc; ++k) voff[(size_t)k + 1] += voff[(size_t)k];
-        const int64_t nv_total = voff[(size_t)nvc];
+        const int64_t nv_total = dvmap.finalize();
         vcoord.resize((size_t)nv_total * 3);
-        fvmap.init(nv_total);
-        post::parallel_tasks(nvc, [&](int64_t k) {
-            int64_t id = voff[(size_t)k];
-            for (int64_t i = vb[(size_t)k]; i < vb[(size_t)k + 1]; ++i) {
-                const uint8_t m = newmask[(size_t)i];
-                for (int d = 0; d < 8; ++d) {
-                    if (!((m >> d) & 1)) continue;
-                    const int x = acoord[3*i] + (d >> 2), y = acoord[3*i+1] + ((d >> 1) & 1), z = acoord[3*i+2] + (d & 1);
-                    vcoord[(size_t)(3*id)] = x; vcoord[(size_t)(3*id+1)] = y; vcoord[(size_t)(3*id+2)] = z;
-                    fvmap.insert(key3(x, y, z), (int32_t)id);
+        const std::vector<int64_t> wb = post::fixed_chunks(dvmap.nwords, 1 << 14);
+        const int64_t nwc = (int64_t)wb.size() - 1;
+        const int64_t dim = dvmap.dim;
+        post::parallel_tasks(nwc, [&](int64_t k) {
+            int64_t id = dvmap.pre[(size_t)wb[(size_t)k]];
+            for (int64_t w = wb[(size_t)k]; w < wb[(size_t)k + 1]; ++w) {
+                uint64_t bits = dvmap.bits[(size_t)w].load(std::memory_order_relaxed);
+                while (bits) {
+                    const int64_t c = (w << 6) | ctz64(bits);
+                    bits &= bits - 1;
+                    vcoord[(size_t)(3*id)]   = (int)(c / (dim * dim));
+                    vcoord[(size_t)(3*id+1)] = (int)((c / dim) % dim);
+                    vcoord[(size_t)(3*id+2)] = (int)(c % dim);
                     ++id;
                 }
             }
@@ -472,7 +503,7 @@ Mesh remesh_narrow_band_dc(const float* iverts, int64_t iV, const int32_t* iface
             int q[4];
             bool ok = true;
             for (int k = 0; k < 4 && ok; ++k) {
-                const int id = vox_id(key3(vx + OFF[axis][k][0], vy + OFF[axis][k][1], vz + OFF[axis][k][2]));
+                const int id = vox_id(vx + OFF[axis][k][0], vy + OFF[axis][k][1], vz + OFF[axis][k][2]);
                 if (id < 0) ok = false;
                 else q[k] = id;
             }
@@ -515,7 +546,7 @@ Mesh remesh_narrow_band_dc(const float* iverts, int64_t iV, const int32_t* iface
                     int q[4];
                     bool ok = true;
                     for (int c = 0; c < 4 && ok; ++c) {
-                        const int id = fvox.find(key3(vx + OFF[axis][c][0], vy + OFF[axis][c][1], vz + OFF[axis][c][2]));
+                        const int id = dvox.find(vx + OFF[axis][c][0], vy + OFF[axis][c][1], vz + OFF[axis][c][2]);
                         if (id < 0) ok = false;
                         else q[c] = id;
                     }
@@ -569,7 +600,7 @@ Mesh remesh_narrow_band_dc(const float* iverts, int64_t iV, const int32_t* iface
             for (int axis = 0; axis < 3; ++axis) {
                 int corner[3] = {base[0], base[1], base[2]};
                 ++corner[axis];
-                if (vox_id(key3(corner[0], corner[1], corner[2])) < 0) continue;
+                if (vox_id(corner[0], corner[1], corner[2]) < 0) continue;
                 const int u = (axis + 1) % 3, v = (axis + 2) % 3;
                 auto sign = [&](int du, int dv) {
                     int p[3] = {corner[0], corner[1], corner[2]};

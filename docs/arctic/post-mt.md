@@ -144,3 +144,22 @@ tables 10.0, UDF at grid vertices 26.0, dual vertices 3.3, quads + compaction 4.
 closest-point queries) are ~72% of what is left and scale with cores: at 24 threads expect ~9 s, so the remaining
 serial-ish parts (tables 10 s at 4 threads) become the next target. `dual_grid_to_mesh` (stage 0, hash lookups) and the
 `audit()` calls in `post-replay` were not touched.
+
+### Update: remesh tables without hashing (dense occupancy + rank)
+
+`remesh_dc` now keeps active voxels and grid vertices in dense occupancy bitsets with per-word prefix popcounts
+(`DenseSet`): lookup = bounds check, bit test, popcount. A voxel's id is its rank among set cells (same as its index
+in `acoord`, which is in linear order). Grid vertices are numbered by rank in linear vertex order instead of first
+visit; vertex ids only index `fvert` (and, in the debug TETS branch, a dedupe key), so the output is unchanged.
+This removes the 13-probe first-visit test and both flat tables (up to ~1.5 GB at 16M faces).
+
+16.45M-face dump, 4 vCPU, hashes identical to legacy at 1 and 4 threads:
+
+| | before (flat hash tables) | dense tables |
+|---|---|---|
+| voxel/vertex tables (4 thr) | 10.0 s | 0.54 s |
+| dual vertices (4 thr) | 3.3 s | 2.1 s |
+| remesh_dc total (4 thr) | 75.1 s | 64.5 s |
+| remesh_dc total (1 thr) | 284.1 s | 236.2 s |
+| front chain wall, legacy hole order, 4 thr | 136.3 s | 124.9 s |
+| peak RSS | 4.51 GB | 3.29 GB |

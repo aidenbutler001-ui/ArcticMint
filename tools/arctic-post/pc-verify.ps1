@@ -273,14 +273,21 @@ function Assert-GpuIdle([string]$when) {
         if ($running) { Fail ('process "' + $proc + '" is already running (PID ' + (($running | ForEach-Object { $_.Id }) -join ',') + '); refusing to share GPU ' + $Gpu) }
     }
     $r = Invoke-Logged -Exe 'nvidia-smi.exe' -LogBase (Join-Path $script:Logs 'nvsmi-apps') -ArgList @(
-        '--query-compute-apps=gpu_uuid,pid,process_name', '--format=csv,noheader,nounits')
+        '--query-compute-apps=gpu_uuid,pid,process_name,used_memory', '--format=csv,noheader,nounits')
     if ($r.ExitCode -eq 0) {
-        $mine = @()
+        $mine = @(); $gfx = @()
         foreach ($line in (Get-Content -LiteralPath $r.OutFile)) {
             if (-not $line.Trim()) { continue }
             $f = $line.Split(',') | ForEach-Object { $_.Trim() }
-            if ($f[0] -eq $g.Uuid) { $mine += $line }
+            if ($f[0] -ne $g.Uuid) { continue }
+            # Under WDDM, with the monitor on this card, nvidia-smi lists the desktop (explorer.exe, overlays, webviews)
+            # here with used_memory "[N/A]" even when the GPU is idle. Count only rows with a real memory figure; the
+            # memory and utilization checks below still catch anything heavy that hides behind [N/A].
+            $memMiB = 0
+            if ($f.Count -ge 4 -and [int]::TryParse($f[$f.Count - 1], [ref]$memMiB) -and $memMiB -gt 0) { $mine += $line }
+            else { $gfx += ('{0} {1}' -f $f[1], (Split-Path -Leaf $f[2])) }
         }
+        if ($gfx.Count -gt 0) { Write-Info ('ignoring ' + $gfx.Count + ' desktop/graphics clients with no memory figure on GPU ' + $Gpu + ': ' + ($gfx -join ', ')) }
         if ($mine.Count -gt 0) { Fail ('GPU ' + $Gpu + ' (' + $g.Name + ') is in use by: ' + ($mine -join ' | ') + ' [' + $when + ']') }
     }
     $maxUtil = $g.UtilPct

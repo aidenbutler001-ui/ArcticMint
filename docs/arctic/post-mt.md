@@ -114,3 +114,33 @@ d512b final GLB 7999c642c96bbadd. Full tables: see `docs/arctic/post-mt-golden.t
 | clean_mesh | 18.5 | 0.7 | yes |
 | drop_components | 0.6 | 0.6 | yes |
 | front chain wall / peak RSS | 66.7 s / 1.73 GB | 33.6 s / 1.47 GB | yes |
+
+## Results at the PC's size: 16.45M raw faces -> 29.4M after remesh (`dC.bin`, 4 vCPU container)
+
+Generated with `gen_dump.py dC.bin --N 1024 --pbr-res 512 --seed 5 --shell 0.03 --amp 2.0 --scale 1.2`; run with
+`--geometry-res 1024 --band 2 --fill-holes --no-audit --stop-before-qem`. Per-stage vertex and face hashes
+identical to the legacy binary at 1 and 4 threads (`input`..`drop_components`; the legacy binary just lacks the
+`area=` column). Seconds:
+
+| Stage | legacy (1 thread, hash maps) | new, 4 threads | new, 1 thread | new 4 thr + canonical holes |
+|---|---|---|---|---|
+| fill_holes (centroid) | 16.9 | 19.4 (legacy order, unchanged) | 19.7 | **1.0** |
+| weld_vertices | 17.4 | **4.6** | 15.1 | 4.9 |
+| fill_small_holes | 25.4 | 28.2 (legacy order, unchanged) | 29.5 | **1.9** |
+| TriBvh::build | 7.5 | **2.6** | 7.4 | 2.8 |
+| remesh_dc | 92.3 | **75.1** | 284.1 | 77.3 |
+| clean_mesh | 73.5 | **3.0** | 5.0 | 3.0 |
+| clean + drop_components | 75.7 | **5.4** | 7.8 | 5.6 |
+| front chain wall | 235.9 | **136.3** | 364.7 | **94.5** |
+| peak RSS | 5.47 GB | 4.51 GB | 4.53 GB | 4.24 GB |
+
+(Legacy remesh already used all 4 threads for its UDF passes; the 1-thread column is the new code with
+`TRELLIS_POST_THREADS=1`.) With the canonical hole order the front chain is 2.5x faster than legacy at 4 threads and
+memory is lower. Canonical order also changes the remesh by 8 faces here (29,383,316 vs 29,383,308) because the
+fill patches differ.
+
+Remesh breakdown at 4 threads (`TRELLIS_POST_TIMING=1`): candidate bitset 2.7, active voxels (UDF) 28.0, voxel/vertex
+tables 10.0, UDF at grid vertices 26.0, dual vertices 3.3, quads + compaction 4.9. The two UDF passes (54 s, BVH
+closest-point queries) are ~72% of what is left and scale with cores: at 24 threads expect ~9 s, so the remaining
+serial-ish parts (tables 10 s at 4 threads) become the next target. `dual_grid_to_mesh` (stage 0, hash lookups) and the
+`audit()` calls in `post-replay` were not touched.

@@ -90,6 +90,11 @@ std::vector<int64_t> fixed_chunks(int64_t n, int64_t target_chunk) {
     return b;
 }
 
+bool canon_holes() {
+    const char* s = std::getenv("TRELLIS_POST_CANON_HOLES");
+    return s && *s && std::strcmp(s, "0") != 0;
+}
+
 // ---------------------------------------------------------------------------
 // debug hashing
 

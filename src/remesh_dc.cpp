@@ -3,6 +3,7 @@
 #include "post_parallel.h"
 #include <algorithm>
 #include <atomic>
+#include <chrono>
 #ifdef _MSC_VER
 #include <intrin.h>
 #endif
@@ -19,6 +20,19 @@
 namespace trellis {
 
 namespace {
+
+// TRELLIS_POST_TIMING=1: print wall time of each remesh sub-step.
+struct StepTimer {
+    bool on = std::getenv("TRELLIS_POST_TIMING") != nullptr;
+    std::chrono::steady_clock::time_point t = std::chrono::steady_clock::now();
+    void lap(const char* what) {
+        if (!on) return;
+        const auto n = std::chrono::steady_clock::now();
+        printf("    [remesh-step] %-22s %.2fs\n", what, std::chrono::duration<double>(n - t).count());
+        fflush(stdout);
+        t = n;
+    }
+};
 
 inline int ctz64(uint64_t v) {
 #ifdef _MSC_VER
@@ -64,6 +78,7 @@ Mesh remesh_narrow_band_dc(const float* iverts, int64_t iV, const int32_t* iface
 
     // Candidate cells: conservative dilation of every triangle's AABB by the
     // band-plus-crossing radius, marked in a res^3 bitset.
+    StepTimer timer;
     const int64_t nbits = (int64_t)res * res * res;
     std::vector<uint64_t> cand((size_t)((nbits + 63) / 64), 0);
     auto bit_set = [&cand, res](int x, int y, int z) {
@@ -134,6 +149,7 @@ Mesh remesh_narrow_band_dc(const float* iverts, int64_t iV, const int32_t* iface
                 for (size_t i = 0; i < cand.size(); ++i) cand[i] |= bits[i];
     }
 
+    timer.lap("candidate bitset");
     // Active voxels: |UDF(center) - eps| < 0.87*cell (spec 27 §4.1).
     std::vector<int> acoord;
     {
@@ -196,6 +212,7 @@ Mesh remesh_narrow_band_dc(const float* iverts, int64_t iV, const int32_t* iface
         });
         cand.clear(); cand.shrink_to_fit();
     }
+    timer.lap("active voxels (UDF)");
     const int64_t Na = (int64_t)acoord.size() / 3;
     if (Na < 100) {
         fprintf(stderr, "  remesh: only %lld active voxels; skipping remesh\n", (long long)Na);
@@ -288,6 +305,7 @@ Mesh remesh_narrow_band_dc(const float* iverts, int64_t iV, const int32_t* iface
             }
         });
     }
+    timer.lap("voxel/vertex tables");
     const int64_t Nv = (int64_t)vcoord.size() / 3;
     std::vector<float> fvert((size_t)Nv);
     parallel_for(Nv, [&](int64_t b, int64_t e) {
@@ -302,6 +320,7 @@ Mesh remesh_narrow_band_dc(const float* iverts, int64_t iV, const int32_t* iface
             fvert[i] = (h.face >= 0 ? std::sqrt(h.dist2) : eps + 2 * cell) - eps;
         }
     });
+    timer.lap("UDF at grid vertices");
     auto fval = [&](int x, int y, int z) -> float {
         const int id = vmap_id(x, y, z);
         return id < 0 ? 1e9f : fvert[id];
@@ -429,6 +448,7 @@ Mesh remesh_narrow_band_dc(const float* iverts, int64_t iV, const int32_t* iface
         }
     });
 
+    timer.lap("dual vertices");
     // Quad assembly per owned crossing edge (spec 27 §4.5); winding from the
     // crossing direction. The reference's "planar diagonal" selection is a
     // latent no-op upstream (always diagonal q0-q2 unless triangle q0q1q2 is
@@ -541,6 +561,7 @@ Mesh remesh_narrow_band_dc(const float* iverts, int64_t iV, const int32_t* iface
         });
     }
 
+    timer.lap("quads + compaction");
     if (std::getenv("TRELLIS_DIAG_DC_AMBIGUITY")) {
         int64_t ambiguous = 0;
         for (int64_t i = 0; i < Na; ++i) {
@@ -592,6 +613,7 @@ Mesh remesh_narrow_band_dc(const float* iverts, int64_t iV, const int32_t* iface
                    project_back, (long long)missed.load(), (long long)NV);
     }
 
+    timer.lap("project back");
     printf("  remesh_dc: %lld active voxels -> V=%d F=%d (eps=%.4g, project_back=%.2f)\n",
            (long long)Na, out.V(), out.F(), eps, project_back);
     fflush(stdout);

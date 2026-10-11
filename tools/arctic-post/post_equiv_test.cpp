@@ -7,6 +7,7 @@
 #include "remesh_dc.h"
 #include "post_parallel.h"
 
+#include <algorithm>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -115,6 +116,43 @@ static M make_cloud(std::mt19937& rng, int nv, float step) {
     return m;
 }
 
+// Canonical hole order (TRELLIS_POST_CANON_HOLES=1): not byte-equal to legacy (loop order / fan apex follow
+// the sorted order instead of unordered_map order), so check instead that (1) it is identical at every
+// thread count, (2) it fills the same number of loops and adds the same number of faces as legacy, and
+// (3) the boundary edge set afterwards equals legacy's (strict mode).
+static std::vector<uint64_t> bset(const std::vector<int32_t>& f) {
+    auto b = trellis::post::boundary_edges(f);
+    for (auto& k : b) { uint32_t u = (uint32_t)(k >> 32), v = (uint32_t)k; if (u > v) std::swap(u, v); k = ((uint64_t)u << 32) | v; }
+    std::sort(b.begin(), b.end());
+    return b;
+}
+template <class Fn>
+static void check_canon(const char* name, int it, const M& in, Fn fn, bool strict = true) {
+    set_env("TRELLIS_POST_CANON_HOLES", nullptr);
+    set_env("TRELLIS_POST_LEGACY", "1");
+    M ref = in; const long long rr = fn(ref);
+    set_env("TRELLIS_POST_LEGACY", nullptr);
+    set_env("TRELLIS_POST_CANON_HOLES", "1");
+    M first; long long r0 = 0; bool have = false;
+    for (int t : kThreads) {
+        set_env("TRELLIS_POST_THREADS", std::to_string(t).c_str());
+        M m = in; const long long r = fn(m);
+        if (!have) {
+            first = m; r0 = r; have = true;
+            if (strict && (r != rr || m.f.size() != ref.f.size() || m.v.size() != ref.v.size() || bset(m.f) != bset(ref.f))) {
+                fprintf(stderr, "CANON MISMATCH vs legacy %s iter %d (filled %lld vs %lld, F %zu vs %zu)\n", name, it, r, rr,
+                        m.f.size() / 3, ref.f.size() / 3);
+                ++g_fail;
+            }
+        } else if (r != r0 || !same(m.v, first.v) || !same(m.f, first.f)) {
+            fprintf(stderr, "CANON NOT DETERMINISTIC %s iter %d threads %d\n", name, it, t);
+            ++g_fail;
+        }
+    }
+    set_env("TRELLIS_POST_CANON_HOLES", nullptr);
+    set_env("TRELLIS_POST_THREADS", nullptr);
+}
+
 int main(int argc, char** argv) {
     const int iters = argc > 1 ? atoi(argv[1]) : 40;
     std::mt19937 rng(12345);
@@ -127,6 +165,10 @@ int main(int argc, char** argv) {
             check("drop_small_components", it, g, [](M& m) { return (long long)trellis::drop_small_components(m.v, m.f, 0.3f); });
             check("fill_small_holes", it, g, [](M& m) { return (long long)trellis::fill_small_holes(m.f); });
             check("fill_holes", it, g, [](M& m) { return (long long)trellis::fill_holes(m.v, m.f, 1e9f); });
+            check_canon("fill_small_holes", it, g, [](M& m) { return (long long)trellis::fill_small_holes(m.f); });
+            // fill_holes' walk marks a whole boundary path as visited, including a cycle it runs into, so on
+            // non-manifold input even the legacy set of filled loops depends on hash order: deterministic only.
+            check_canon("fill_holes", it, g, [](M& m) { return (long long)trellis::fill_holes(m.v, m.f, 1e9f); }, false);
         }
         // weld (positions and colours both checked: colours ride in m.v of a second run)
         {

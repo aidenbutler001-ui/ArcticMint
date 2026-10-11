@@ -25,6 +25,39 @@ int64_t exclusive_scan(std::vector<int64_t>& v) {
 
 }  // namespace
 
+std::vector<uint64_t> boundary_edges(const std::vector<int32_t>& faces) {
+    std::vector<uint64_t> out;
+    const int64_t F = (int64_t)(faces.size() / 3);
+    if (F == 0) return out;
+    const int64_t Vb = vertex_bound(faces.data(), faces.size());
+    const EdgeCsr csr = build_edge_csr(faces.data(), F, Vb);
+    const std::vector<int64_t> cb = fixed_chunks(Vb, 1 << 16);
+    const int64_t nc = (int64_t)cb.size() - 1;
+    std::vector<std::vector<uint64_t>> parts((size_t)nc);
+    parallel_tasks(nc, [&](int64_t k) {
+        auto& part = parts[(size_t)k];
+        for (int64_t a = cb[(size_t)k]; a < cb[(size_t)k + 1]; ++a) {
+            const int64_t lo = csr.off[(size_t)a], hi = csr.off[(size_t)a + 1];
+            for (int64_t i = lo; i < hi;) {
+                int64_t j = i + 1;
+                const int32_t o = EdgeCsr::other(csr.ent[(size_t)i]);
+                while (j < hi && EdgeCsr::other(csr.ent[(size_t)j]) == o) ++j;
+                if (j - i == 1) {
+                    const int32_t c = EdgeCsr::corner(csr.ent[(size_t)i]);
+                    const int32_t u = faces[(size_t)c], v = faces[(size_t)(3 * (c / 3) + (c % 3 + 1) % 3)];
+                    part.push_back(((uint64_t)(uint32_t)u << 32) | (uint32_t)v);
+                }
+                i = j;
+            }
+        }
+    });
+    size_t n = 0;
+    for (auto& p : parts) n += p.size();
+    out.reserve(n);
+    for (auto& p : parts) out.insert(out.end(), p.begin(), p.end());
+    return out;
+}
+
 // ---------------------------------------------------------------------------
 // weld_vertices
 //

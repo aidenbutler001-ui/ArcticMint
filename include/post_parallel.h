@@ -107,6 +107,15 @@ EdgeCsr build_edge_csr(const int32_t* faces, int64_t F, int64_t V);
 // max index + 1 (0 when empty).
 int64_t vertex_bound(const int32_t* faces, size_t n);
 
+// Hole filling. TRELLIS_POST_CANON_HOLES=1 selects the canonical, library-independent
+// processing order (ascending vertex id); the default keeps the legacy
+// unordered_map iteration order. See docs/arctic/post-mt.md.
+bool canon_holes();
+// Boundary edges (undirected use count exactly 1) as directed keys (u << 32 | v), where u -> v
+// is the direction of the sole face edge, in ascending undirected-key order. Same set as the
+// legacy edge-use hash map, found with a parallel sort-based CSR.
+std::vector<uint64_t> boundary_edges(const std::vector<int32_t>& faces);
+
 // Rewritten stages (dispatched from the legacy functions unless legacy()).
 int  weld_vertices(std::vector<float>& verts, std::vector<int32_t>& faces, std::vector<float>* colors3, float step);
 void clean_mesh(int V, std::vector<int32_t>& faces);

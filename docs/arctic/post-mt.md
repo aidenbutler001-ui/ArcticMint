@@ -1,5 +1,8 @@
 # Arctic: multithreaded CPU post-processing (`claude/arctic-post-mt`)
 
+Repo: `aidenbutler001-ui/ArcticMint` (private, standalone). This work started in the old public fork
+`ArcticMint_trellis.cpp` (merged there as PR #2; see `docs/arctic/pr-history.md`); that fork is being deleted.
+
 Goal: make weld / hole fill / BVH / remesh / clean much faster using sort-based flat data structures and `std::thread`,
 with output byte-identical to the original code. Plan and profile: project repo
 `research/notes/arctic-post-profile.md`.

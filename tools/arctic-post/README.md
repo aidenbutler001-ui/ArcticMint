@@ -1,4 +1,4 @@
-# arctic-post: CPU post-processing harness (Arctic fork only)
+# arctic-post: CPU post-processing harness (ArcticMint only)
 
 Tools for profiling and speeding up trellis.cpp's CPU post-processing (weld → fill holes → remesh → clean → decimate →
 UV/bake → GLB) without a GPU and without ggml. The profile and the plan are in the project repo
@@ -25,7 +25,7 @@ the PC (`trellis-cli ... --dump-post PATH`) before trusting the timings.
 
 ## PC verification: `pc-verify.ps1` (Windows, MSVC + CUDA)
 
-One script that builds the fork on the PC, makes two real dumps, replays them three ways and says PASS/FAIL per asset.
+One script that builds ArcticMint on the PC, makes two real dumps, replays them three ways and says PASS/FAIL per asset.
 
 **Not run in the cloud.** It was written without a Windows machine, an NVIDIA GPU or PowerShell 5.1. It was only
 parse-checked, and its helper functions (argument quoting, hash/timing parsing, timestamp-masked GLB hash, the logged

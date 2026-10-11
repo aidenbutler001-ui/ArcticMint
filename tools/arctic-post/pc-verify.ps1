@@ -1,6 +1,6 @@
 <#
 .SYNOPSIS
-  One-shot PC verification of the Arctic multithreaded post-processing (Windows, MSVC + CUDA).
+  One-shot PC verification of the Arctic multithreaded post-processing in ArcticMint (Windows, MSVC + CUDA).
 
 .DESCRIPTION
   NOT RUN IN THE CLOUD: written without access to a Windows machine, an NVIDIA GPU or PowerShell 5.1.

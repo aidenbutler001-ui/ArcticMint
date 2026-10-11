@@ -27,13 +27,15 @@ jobs:
   post-linux:
     runs-on: ubuntu-24.04
     timeout-minutes: 20
+    env:
+      CCACHE_DIR: ${{ github.workspace }}/.ccache
     steps:
       - uses: actions/checkout@v4
         with:
           submodules: false
       - uses: actions/cache@v4
         with:
-          path: ~/.ccache
+          path: .ccache
           key: ccache-post-linux-${{ github.sha }}
           restore-keys: ccache-post-linux-
       - name: Install tools
@@ -52,8 +54,7 @@ jobs:
           build-post/post-replay d.bin a.glb --geometry-res 512 --faces 20000
           build-post/post-replay d.bin b.glb --geometry-res 512 --faces 20000
           sha256sum a.glb b.glb
-          # only the "generated" timestamp in the JSON header may differ
-          cmp -i 200 a.glb b.glb
+          python3 tools/arctic-post/glb_same.py a.glb b.glb
 
   # PRs to main only: Windows minutes count double.
   post-msvc:
@@ -86,6 +87,8 @@ jobs:
 
   engine-linux:
     needs: gate
+    env:
+      CCACHE_DIR: ${{ github.workspace }}/.ccache
     if: needs.gate.outputs.has_key == 'true' && (github.event_name == 'push' || github.event.pull_request.head.repo.full_name == github.repository)
     runs-on: ubuntu-24.04
     timeout-minutes: 20
@@ -102,7 +105,7 @@ jobs:
           git submodule update --init --depth 1 thirdparty/ggml
       - uses: actions/cache@v4
         with:
-          path: ~/.ccache
+          path: .ccache
           key: ccache-engine-linux-${{ github.sha }}
           restore-keys: ccache-engine-linux-
       - name: Build (CPU only)

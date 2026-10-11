@@ -1,6 +1,6 @@
 <#
 .SYNOPSIS
-  Trellis Studio — one-command setup for Windows (x64).
+  Trellis Studio - one-command setup for Windows (x64).
 
 .DESCRIPTION
   Detects the GPU runtime (CUDA / ROCm / Vulkan), downloads the matching
@@ -68,7 +68,7 @@ function Detect-Backend {
               [System.Globalization.NumberStyles]::Float,
               [System.Globalization.CultureInfo]::InvariantCulture,
               [ref]$cap) -and $cap -ge 6.0 -and $cap -lt 7.5) {
-          Info "detected NVIDIA compute capability $capText — selecting the CUDA 12 legacy runtime"
+          Info "detected NVIDIA compute capability $capText - selecting the CUDA 12 legacy runtime"
           return "cuda12"
         }
         return "cuda"
@@ -80,7 +80,7 @@ function Detect-Backend {
     if ($gpus | Where-Object { $_.Name -match "AMD|Radeon" }) {
       # ROCm is possible on AMD, but the published bundle needs a matching TheRock
       # runtime; Vulkan is self-contained and robust, so it's the safe auto default.
-      Info "detected an AMD GPU — ROCm-capable (use -Backend rocm to force it)"
+      Info "detected an AMD GPU - ROCm-capable (use -Backend rocm to force it)"
     }
   } catch {}
   return "vulkan"
@@ -153,7 +153,7 @@ if ($SkipApp) {
     Info "launching installer (silent, per-user)"
     Start-Process $setup -ArgumentList "/S" -Wait
   } catch {
-    Warn "app installer not available on the latest release yet — skipping."
+    Warn "app installer not available on the latest release yet - skipping."
     Warn "You can still run the UI in a browser against trellis-server (see docs)."
   }
 }
@@ -181,4 +181,4 @@ $cfg = [ordered]@{
 Info "config: $(Join-Path $ConfigDir 'config.json')"
 
 Write-Host ""
-Log "done — launch Trellis Studio from the Start menu."
+Log "done - launch Trellis Studio from the Start menu."

@@ -1,0 +1,22 @@
+# Standalone CPU-only build of the post-processing stages and post-replay, without ggml or a GPU.
+# For profiling and determinism tests of the mesh pipeline. Not part of the main build.
+#   cmake -S tools/arctic-post -B build-post -G Ninja -DCMAKE_BUILD_TYPE=Release && ninja -C build-post
+cmake_minimum_required(VERSION 3.16)
+project(arctic_post CXX)
+set(CMAKE_CXX_STANDARD 17)
+get_filename_component(R "${CMAKE_CURRENT_LIST_DIR}/../.." ABSOLUTE)
+find_package(Threads REQUIRED)
+set(SRCS mesh_glb tri_bvh mesh_shape quad_refinement quad_refinement_gates quad_refinement_io quad_components
+         quad_topology quad_component_cover uv_overlap_cover uv_bake remesh_dc decimate_qem)
+set(SL "")
+foreach(s ${SRCS})
+  list(APPEND SL ${R}/src/${s}.cpp)
+endforeach()
+add_library(arctic_post_core STATIC ${SL} ${R}/thirdparty/xatlas/xatlas.cpp ${R}/thirdparty/meshoptimizer/simplifier.cpp)
+target_include_directories(arctic_post_core PUBLIC ${R}/include ${R}/thirdparty/stb ${R}/thirdparty/xatlas
+                           ${R}/thirdparty/meshoptimizer ${R}/thirdparty/fqms)
+target_link_libraries(arctic_post_core PUBLIC Threads::Threads)
+add_executable(post-replay ${R}/src/post_replay.cpp)
+target_link_libraries(post-replay PRIVATE arctic_post_core)
+add_executable(edgebench ${CMAKE_CURRENT_LIST_DIR}/edgebench.cpp)
+target_link_libraries(edgebench PRIVATE Threads::Threads)

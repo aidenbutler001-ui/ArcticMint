@@ -49,11 +49,11 @@ class T(unittest.TestCase):
     def test_env_threads_and_gpu(self):
         out = os.path.join(self.d, "o")
         run(self.imgs, out, "--total-threads", "24", "--post-workers", "3")
-        e = json.load(open(os.path.join(out, "a.glb.env.json")))
+        e = json.load(open(os.path.join(out, "a.part.glb.env.json")))
         self.assertEqual(e, {"CUDA_VISIBLE_DEVICES": "0", "TRELLIS_POST_THREADS": "8", "CUDA_DEVICE_ORDER": "PCI_BUS_ID"})
         out2 = os.path.join(self.d, "o2")
         run(self.imgs, out2, "--serial", "--qem", "cpu")
-        e = json.load(open(os.path.join(out2, "a.glb.env.json")))
+        e = json.load(open(os.path.join(out2, "a.part.glb.env.json")))
         self.assertEqual((e["CUDA_VISIBLE_DEVICES"], e["TRELLIS_POST_THREADS"]), ("-1", "24"))
 
     def test_failure_isolated(self):

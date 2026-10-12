@@ -34,6 +34,11 @@
   Fail when the tail (decimate_qem onward, GLB) differs from legacy. Off by default: the GPU QEM decimation is
   non-deterministic run to run even in the legacy code (seen on the PC 2026-10-11), and the multithreaded post code
   ends before QEM, so tail differences are reported but do not fail the verdict.
+.PARAMETER TailFaceTolPct
+  Tail tolerance (default 0.5): max relative face-count difference vs the legacy run, per tail stage.
+.PARAMETER TailAreaTolPct
+  Tail tolerance (default 0.1): max relative surface-area difference vs the legacy run, per tail stage. Hausdorff
+  distance is not checked here (needs a mesh tool); compare the GLBs by hand if a tail run is suspicious.
 .PARAMETER FrontOnly
   Pass --stop-before-qem to post-replay (skips QEM/UV/GLB; much faster; no GLB comparison).
 .EXAMPLE
@@ -63,6 +68,8 @@ param(
     [int]$BuildJobs = 8,
     [switch]$FrontOnly,
     [switch]$StrictTail,
+    [double]$TailFaceTolPct = 0.5,
+    [double]$TailAreaTolPct = 0.1,
     [switch]$SkipBuild,
     [switch]$SkipDump,
     [switch]$SkipTests
@@ -327,6 +334,17 @@ function Parse-StageHashes([string]$file) {
     return $d
 }
 
+# Returns stage -> @{ F = faces; Area = surface area } from the same [post-hash] lines.
+function Parse-StageStats([string]$file) {
+    $d = @{}
+    foreach ($line in (Get-Content -LiteralPath $file)) {
+        if ($line -match '^\s*\[post-hash\]\s+(\S+)\s+V=\d+\s+F=(\d+)\s+verts=[0-9a-f]+\s+faces=[0-9a-f]+\s+area=([0-9.eE+-]+)') {
+            $d[$Matches[1]] = @{ F = [double]$Matches[2]; Area = (Parse-Double $Matches[3]) }
+        }
+    }
+    return $d
+}
+
 function Parse-StageTimes([string]$file) {
     $t = @{}
     foreach ($line in (Get-Content -LiteralPath $file)) {
@@ -547,12 +565,13 @@ try {
                 Fail ('post-replay ' + $name + ' / ' + $cfg.Label + ' failed (exit ' + $r.ExitCode + $(if ($r.TimedOut) { ', timed out' } else { '' }) + ')')
             }
             $hashes = Parse-StageHashes $r.OutFile
+            $stats = Parse-StageStats $r.OutFile
             $times = Parse-StageTimes $r.OutFile
             $allText = (Get-Content -LiteralPath $r.OutFile) + (Get-Content -LiteralPath $r.ErrFile)
             $devLine = ($allText | Where-Object { $_ -match 'decimate_qem_gpu\] current device' } | Select-Object -First 1)
             $fallback = [bool]($allText | Where-Object { $_ -match 'GPU decimation unavailable' } | Select-Object -First 1)
             $glbHash = if ($FrontOnly) { 'n/a' } else { Get-GlbHash $glb }
-            $runData[$cfg.Name] = [pscustomobject]@{ Cfg = $cfg; Run = $r; Hashes = $hashes; Times = $times; Glb = $glbHash; Dev = $devLine; Fallback = $fallback }
+            $runData[$cfg.Name] = [pscustomobject]@{ Cfg = $cfg; Run = $r; Hashes = $hashes; Stats = $stats; Times = $times; Glb = $glbHash; Dev = $devLine; Fallback = $fallback }
             Write-Info ('    {0:N1}s, peak {1:N0} MB, {2} stage hashes, glb {3}' -f $r.Seconds, $r.PeakMB, $hashes.Count, $glbHash)
             if ($hashes.Count -eq 0) { Fail ('no [post-hash] lines in ' + $r.OutFile + ' (is this build the Arctic branch?)') }
             $row = [ordered]@{
@@ -570,6 +589,7 @@ try {
         $legacyRun = $runData['legacy']
         $problems = New-Object System.Collections.ArrayList
         $tailProblems = New-Object System.Collections.ArrayList
+        $tolProblems = New-Object System.Collections.ArrayList
         foreach ($cfg in $configs) {
             if ($cfg.Name -eq 'legacy') { continue }
             $cur = $runData[$cfg.Name]
@@ -582,7 +602,16 @@ try {
                 foreach ($st in $tailStages) {
                     $haveRef = $legacyRun.Hashes.Contains($st); $haveCur = $cur.Hashes.Contains($st)
                     if ($haveRef -ne $haveCur) { [void]$tailProblems.Add($cfg.Name + ': stage ' + $st + ' present in only one of the runs'); continue }
-                    if ($haveRef -and ($legacyRun.Hashes[$st] -ne $cur.Hashes[$st])) { [void]$tailProblems.Add($cfg.Name + ' differs from legacy at ' + $st) }
+                    if ($haveRef -and ($legacyRun.Hashes[$st] -ne $cur.Hashes[$st])) {
+                        [void]$tailProblems.Add($cfg.Name + ' differs from legacy at ' + $st)
+                        if ($legacyRun.Stats.ContainsKey($st) -and $cur.Stats.ContainsKey($st)) {
+                            $a = $legacyRun.Stats[$st]; $b = $cur.Stats[$st]
+                            $fPct = if ($a.F -gt 0) { 100.0 * [math]::Abs($b.F - $a.F) / $a.F } else { 0.0 }
+                            $aPct = if ($a.Area -gt 0) { 100.0 * [math]::Abs($b.Area - $a.Area) / $a.Area } else { 0.0 }
+                            if ($fPct -gt $TailFaceTolPct) { [void]$tolProblems.Add(($cfg.Name + ' ' + $st + ': faces ' + $b.F + ' vs ' + $a.F + ' (' + $fPct.ToString('0.000', $inv) + '% > ' + $TailFaceTolPct + '%)')) }
+                            if ($aPct -gt $TailAreaTolPct) { [void]$tolProblems.Add(($cfg.Name + ' ' + $st + ': area ' + $b.Area + ' vs ' + $a.Area + ' (' + $aPct.ToString('0.000', $inv) + '% > ' + $TailAreaTolPct + '%)')) }
+                        } else { [void]$tolProblems.Add($cfg.Name + ' ' + $st + ': no face/area stats to check the tolerance') }
+                    }
                 }
                 if ($legacyRun.Glb -ne $cur.Glb) { [void]$tailProblems.Add($cfg.Name + ' GLB (timestamp masked) ' + $cur.Glb + ' vs legacy ' + $legacyRun.Glb) }
             }
@@ -595,7 +624,10 @@ try {
         $verdict = 'PASS'
         if ($problems.Count -gt 0) { $verdict = 'FAIL' }
         elseif ($tailProblems.Count -gt 0) {
-            $verdict = if ($StrictTail) { 'FAIL (tail only)' } else { 'PASS (front exact; tail differs: GPU QEM is non-deterministic)' }
+            $verdict = if ($StrictTail) { 'FAIL (tail only)' }
+                       elseif ($tolProblems.Count -gt 0) { 'FAIL (tail outside tolerance)' }
+                       else { 'PASS (front exact; tail within ' + $TailFaceTolPct + '% faces / ' + $TailAreaTolPct + '% area of legacy)' }
+            foreach ($tp in $tolProblems) { [void]$tailProblems.Add('OUT OF TOLERANCE: ' + $tp) }
         }
         [void]$results.Add([pscustomobject]@{ Asset = $name; Verdict = $verdict; Problems = $problems; TailProblems = $tailProblems; Data = $runData })
         Write-Host ('    ' + $name + ': ' + $verdict) -ForegroundColor $(if ($verdict -like 'PASS*') { 'Green' } else { 'Red' })

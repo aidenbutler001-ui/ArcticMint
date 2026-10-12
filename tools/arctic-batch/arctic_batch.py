@@ -2,20 +2,66 @@
 """arctic-batch: overlap GPU generation with CPU post-processing (stdlib only, Windows ok).
 
 GPU worker : trellis-cli ... --dump-post <dump>   (back to back, on the generation GPU)
+             --dump-mode raw: TRELLIS_DUMP_POST=<dump> + TRELLIS_STOP_AFTER_POST_DUMP=1 instead (exits right after the
+             texture decode; post-replay then runs the serial CLI's exact weld..drop chain)
 Post pool  : post-replay <dump> <glb> ...          (N workers, TRELLIS_POST_THREADS = total/N each)
 --serial   : same commands, one asset at a time, post gets all threads (today's behaviour).
+--gpulock  : hold the cross-project GPU locks (tools/gpulock.py of Expiramental3d) for the whole batch.
+--phase-lock / ARCTIC_GPU_PHASE_LOCK : serialise the 3060 Ti's QEM (post-replay) and Cycles bake (finish.py).
 
 Subcommands: run (default), compare (masked-GLB hash compare of two output dirs).
 """
-import argparse, csv, hashlib, os, queue, re, shlex, subprocess, sys, threading, time
+import argparse, csv, hashlib, importlib.util, os, queue, re, shlex, subprocess, sys, threading, time
 
 IMG_EXT = {".png", ".jpg", ".jpeg", ".webp"}
 CSV_FIELDS = ["asset", "status", "gen_s", "queue_wait_s", "post_s", "finish_wait_s", "finish_s", "asset_total_s",
-              "dump_mb", "glb_sha256_masked", "error"]
+              "dump_mb", "glb_sha256_masked", "error",
+              "gen_start", "gen_end", "post_start", "post_end", "finish_start", "finish_end",
+              "dump_mode", "front_hash", "dump_ok", "warnings"]
+TIME_KEYS = {"gen_start": "t_gen_start", "gen_end": "t_gen_end", "post_start": "t_post_start", "post_end": "t_post_end",
+             "finish_start": "t_finish_start", "finish_end": "t_finish_end"}
+PHASE_LOCK_ENV = "ARCTIC_GPU_PHASE_LOCK"
+HASH_RE = re.compile(r"\[post-hash\]\s+(\S+)\s+V=(\d+)\s+F=(\d+)\s+verts=([0-9a-f]+)\s+faces=([0-9a-f]+)")
+# log patterns -> warning tokens; "GPU decimation unavailable" is decimate_qem.cpp's CPU-fallback message (15-25 min per prop)
+WARN_PATTERNS = [("cpu_qem", re.compile(r"GPU decimation unavailable")),
+                 ("oom", re.compile(r"out of memory|OUT_OF_MEMORY|MemoryAllocation|bad_alloc", re.I))]
 
 
-def split_cmd(s):
-    return shlex.split(s, posix=(os.name != "nt")) if isinstance(s, str) else list(s)
+def split_cmd(s, posix=None):
+    """shlex split. On Windows (posix=False) shlex keeps the quote characters in the tokens, which Popen would then
+    escape again, so surrounding quotes are stripped."""
+    if not isinstance(s, str):
+        return list(s)
+    posix = (os.name != "nt") if posix is None else posix
+    toks = shlex.split(s, posix=posix)
+    if not posix:
+        toks = [t[1:-1] if len(t) >= 2 and t[0] == t[-1] and t[0] in "\"'" else t for t in toks]
+    return toks
+
+
+def iso(t):
+    return "" if not t else time.strftime("%Y-%m-%dT%H:%M:%S", time.gmtime(t)) + ".%03dZ" % int((t % 1) * 1000)
+
+
+def parse_hashes(text):
+    """stage -> (V, F, verts_hash, faces_hash), last occurrence wins (TRELLIS_POST_HASH=1 output)."""
+    out = {}
+    for m in HASH_RE.finditer(text):
+        out[m.group(1)] = (int(m.group(2)), int(m.group(3)), m.group(4), m.group(5))
+    return out
+
+
+def read_text(path):
+    try:
+        with open(path, "r", encoding="utf-8", errors="replace") as f:
+            return f.read()
+    except OSError:
+        return ""
+
+
+def scan_warnings(path):
+    text = read_text(path)
+    return {tok for tok, rx in WARN_PATTERNS if rx.search(text)}
 
 
 def masked_glb_hash(path):
@@ -59,15 +105,36 @@ class Batch:
         self.finish = split_cmd(a.finish_cmd) if a.finish_cmd else None
 
     # -- environments -------------------------------------------------------
-    def gen_env(self):
+    def gen_env(self, dump=None):
         e = dict(os.environ)
         e["CUDA_DEVICE_ORDER"] = "PCI_BUS_ID"
+        if self.a.hash:
+            e["TRELLIS_POST_HASH"] = "1"
+        if self.a.dump_mode == "raw":
+            # trellis_cli.cpp: TRELLIS_DUMP_POST writes the pre-weld mesh after fill_holes, TRELLIS_STOP_AFTER_POST_DUMP
+            # then returns 0, so the generation process never runs weld / remesh / clean / drop.
+            e["TRELLIS_DUMP_POST"] = dump
+            e["TRELLIS_STOP_AFTER_POST_DUMP"] = "1"
         return e
+
+    def remesh_gib(self):
+        """TRELLIS_REMESH_MEM_GIB for post-replay: auto = 4 GiB with one post worker (24 remesh workers instead of 8),
+        unset with several (they share the RAM); a number forces it; 0 or less leaves the binary's default."""
+        g = self.a.remesh_mem_gib
+        if g is None:
+            return 4.0 if self.a.post_workers == 1 else None
+        return g if g > 0 else None
 
     def post_env(self, threads):
         e = dict(os.environ)
         e["CUDA_DEVICE_ORDER"] = "PCI_BUS_ID"
         e["TRELLIS_POST_THREADS"] = str(threads)
+        if self.a.hash:
+            e["TRELLIS_POST_HASH"] = "1"
+        if self.remesh_gib() is not None:
+            e["TRELLIS_REMESH_MEM_GIB"] = "%g" % self.remesh_gib()
+        if self.a.phase_lock:
+            e[PHASE_LOCK_ENV] = self.a.phase_lock
         # post-replay never runs ggml: without this its GPU QEM lands on CUDA device 0.
         # "-1" = no visible device -> decimate_qem falls back to the CPU path.
         e["CUDA_VISIBLE_DEVICES"] = "-1" if self.a.qem == "cpu" else str(self.a.post_gpu)
@@ -78,7 +145,9 @@ class Batch:
         a = self.a
         cmd = self.cli + ["-i", img, "-o", os.path.join(self.dumps, name + ".unused.glb"),
                           "-m", a.models, "--res", str(a.res), "--gpu", str(a.gen_gpu),
-                          "--seed", str(a.seed), "--dump-post", dump]
+                          "--seed", str(a.seed)]
+        if a.dump_mode == "cleaned":
+            cmd += ["--dump-post", dump]
         return cmd + split_cmd(a.cli_extra)
 
     def post_cmd(self, dump, glb):
@@ -135,14 +204,16 @@ class Batch:
         dump = os.path.join(self.dumps, name + ".bin")
         self.rm(dump)  # a stale dump from an earlier run must never pass for this run's output
         t0 = time.time()
-        rc = self.run_logged(self.gen_cmd(img, name, dump), self.gen_env(),
-                             os.path.join(self.logs, name + ".gen.log"), timeout=self.a.gen_timeout)
+        glog = os.path.join(self.logs, name + ".gen.log")
+        rc = self.run_logged(self.gen_cmd(img, name, dump), self.gen_env(dump), glog, timeout=self.a.gen_timeout)
         dt = time.time() - t0
         if rc != 0 or not os.path.isfile(dump):
-            self.fail(name, "gen", dt, "trellis-cli exit %s" % rc)
+            self.fail(name, "gen", dt, "trellis-cli exit %s" % rc, t0)
             return None
-        self.rows[name] = {"asset": name, "gen_s": dt, "t_gen_end": time.time(),
-                           "dump_mb": os.path.getsize(dump) / 1048576.0}
+        warn = {"gen:" + w for w in scan_warnings(glog)}
+        self.rows[name] = {"asset": name, "gen_s": dt, "t_gen_start": t0, "t_gen_end": time.time(),
+                           "dump_mb": os.path.getsize(dump) / 1048576.0, "dump_mode": self.a.dump_mode,
+                           "_warn": warn}
         return dump
 
     @staticmethod
@@ -155,20 +226,30 @@ class Batch:
     def do_post(self, name, dump, threads):
         row = self.rows[name]
         t_start = time.time()
+        row["t_post_start"] = t_start
         row["queue_wait_s"] = t_start - row["t_gen_end"]
         glb = os.path.join(self.out, name + ".glb")
         tmp = os.path.join(self.out, name + ".part.glb")  # written here, renamed only on success
         self.rm(glb); self.rm(tmp)
-        rc = self.run_logged(self.post_cmd(dump, tmp), self.post_env(threads),
-                             os.path.join(self.logs, name + ".post.log"), timeout=self.a.post_timeout, low_priority=True)
+        plog = os.path.join(self.logs, name + ".post.log")
+        rc = self.run_logged(self.post_cmd(dump, tmp), self.post_env(threads), plog,
+                             timeout=self.a.post_timeout, low_priority=True)
         row["post_s"] = time.time() - t_start
+        self.read_hashes(name, plog)
+        pw = scan_warnings(plog)
+        row["_warn"] |= {"post:" + w for w in pw}
         if rc != 0 or not os.path.isfile(tmp):
             row["status"], row["error"] = "post_failed", "post-replay exit %s" % rc
+            self.rm(tmp)
+        elif "cpu_qem" in pw and self.a.fail_on_cpu_qem:
+            row["status"], row["error"] = "post_failed", "GPU QEM fell back to the CPU (--fail-on-cpu-qem)"
             self.rm(tmp)
         else:
             os.replace(tmp, glb)
             row["status"] = "ok"
             row["glb_sha256_masked"] = masked_glb_hash(glb)
+            if "cpu_qem" in pw:
+                self.log("%s: WARNING GPU QEM fell back to the CPU (VRAM contention?)" % name)
         row["asset_total_s"] = row["gen_s"] + row["queue_wait_s"] + row["post_s"]
         row["t_post_end"] = time.time()
         if not self.a.keep_dumps and row["status"] == "ok":
@@ -185,6 +266,7 @@ class Batch:
         (the 3060 Ti) visible so a Cycles bake cannot land on the generation card."""
         row = self.rows[name]
         t_start = time.time()
+        row["t_finish_start"] = t_start
         row["finish_wait_s"] = t_start - row["t_post_end"]
         fdir = os.path.join(self.out, "finished", name)
         os.makedirs(fdir, exist_ok=True)
@@ -192,16 +274,44 @@ class Batch:
         e = dict(os.environ)
         e["CUDA_DEVICE_ORDER"] = "PCI_BUS_ID"
         e["CUDA_VISIBLE_DEVICES"] = str(self.a.post_gpu)
-        rc = self.run_logged(cmd, e, os.path.join(self.logs, name + ".finish.log"),
-                             timeout=self.a.finish_timeout, low_priority=True)
-        row["finish_s"] = time.time() - t_start
+        if self.a.phase_lock:
+            e[PHASE_LOCK_ENV] = self.a.phase_lock
+        flog = os.path.join(self.logs, name + ".finish.log")
+        rc = self.run_logged(cmd, e, flog, timeout=self.a.finish_timeout, low_priority=True)
+        fw = scan_warnings(flog)
+        for attempt in range(self.a.finish_retries):  # an out-of-memory finish is a bake collision: wait, then try once more
+            if rc == 0 or "oom" not in fw or self.stop.is_set():
+                break
+            self.log("%s: finish hit an out-of-memory; retrying in %.0fs" % (name, self.a.finish_retry_wait))
+            row["_warn"].add("finish:oom_retried")
+            time.sleep(self.a.finish_retry_wait)
+            os.replace(flog, flog + ".try%d" % (attempt + 1))
+            rc = self.run_logged(cmd, e, flog, timeout=self.a.finish_timeout, low_priority=True)
+            fw = scan_warnings(flog)
+        row["_warn"] |= {"finish:" + w for w in fw}
+        row["t_finish_end"] = time.time()
+        row["finish_s"] = row["t_finish_end"] - t_start
         if rc != 0:
             row["status"], row["error"] = "finish_failed", "finish exit %s" % rc
         row["asset_total_s"] = row["gen_s"] + row["queue_wait_s"] + row["post_s"] + row["finish_wait_s"] + row["finish_s"]
         self.log("%s: finish %.1fs (wait %.1fs) -> %s" % (name, row["finish_s"], row["finish_wait_s"], row["status"]))
 
-    def fail(self, name, stage, dt, err):
-        self.rows[name] = {"asset": name, "status": stage + "_failed", "gen_s": dt, "error": err}
+    def read_hashes(self, name, plog):
+        """front_hash = the post chain's drop_components buffers; dump_ok = the generation's fill_holes hash equals
+        post-replay's input hash (raw mode: proves the dump round trip). Both need --hash."""
+        row = self.rows[name]
+        ph = parse_hashes(read_text(plog))
+        if "drop_components" in ph:
+            row["front_hash"] = "%s:%s" % (ph["drop_components"][2], ph["drop_components"][3])
+        gh = parse_hashes(read_text(os.path.join(self.logs, name + ".gen.log")))
+        if "fill_holes" in gh and "input" in ph:
+            row["dump_ok"] = "yes" if gh["fill_holes"] == ph["input"] else "NO"
+
+    def fail(self, name, stage, dt, err, t0=None):
+        self.rows[name] = {"asset": name, "status": stage + "_failed", "gen_s": dt, "error": err,
+                           "dump_mode": self.a.dump_mode, "_warn": set()}
+        if t0:
+            self.rows[name].update(t_gen_start=t0, t_gen_end=t0 + dt)
         self.log("%s: %s FAILED (%s)" % (name, stage, err))
 
     def log(self, msg):
@@ -281,7 +391,10 @@ class Batch:
             w = csv.DictWriter(f, CSV_FIELDS)
             w.writeheader()
             for name in order:
-                r = self.rows.get(name, {"asset": name, "status": "not_run"})
+                r = dict(self.rows.get(name, {"asset": name, "status": "not_run"}))
+                for col, key in TIME_KEYS.items():
+                    r[col] = iso(r.get(key))
+                r["warnings"] = ";".join(sorted(r.get("_warn", ())))
                 w.writerow({k: ("%.2f" % r[k] if isinstance(r.get(k), float) else r.get(k, ""))
                             for k in CSV_FIELDS})
             ok = sum(1 for r in self.rows.values() if r.get("status") == "ok")
@@ -290,6 +403,143 @@ class Batch:
                         "error": "mode=%s assets_per_hour=%.2f" %
                                  ("serial" if self.a.serial else "overlap", ok * 3600.0 / wall if wall else 0)})
         return path
+
+    def write_report(self, order, wall):
+        """batch_report.md: one page to read instead of the logs (wall, busy %, per-prop table, warnings, verdict)."""
+        rows = [self.rows.get(n, {"asset": n, "status": "not_run"}) for n in order]
+        ok = [r for r in rows if r.get("status") == "ok"]
+        gen_sum = sum(r.get("gen_s", 0.0) for r in rows if isinstance(r.get("gen_s"), float))
+        mode = "serial" if self.a.serial else "overlap"
+        problems = ["%s: %s" % (r["asset"], r.get("status")) for r in rows if r.get("status") != "ok"]
+        for r in rows:
+            for wtok in sorted(r.get("_warn", ())):
+                if wtok.split(":")[1] in ("cpu_qem", "oom", "oom_retried"):
+                    problems.append("%s: %s" % (r["asset"], wtok))
+            if r.get("dump_ok") == "NO":
+                problems.append("%s: dump_ok NO (generation fill_holes hash != post-replay input hash)" % r["asset"])
+        lines = ["# arctic-batch report", "",
+                 "- mode %s, dump mode %s, post workers %d x %d threads, finish workers %d" %
+                 (mode, self.a.dump_mode, self.a.post_workers, max(1, self.a.total_threads // self.a.post_workers),
+                  self.a.finish_workers if self.finish else 0),
+                 "- wall %.0f s, %d/%d ok, %.2f assets/hour" % (wall, len(ok), len(order), len(ok) * 3600.0 / wall if wall else 0),
+                 "- generation GPU busy %.0f %% of the wall (sum of gen_s %.0f s)" % (100.0 * gen_sum / wall if wall else 0, gen_sum),
+                 "- phase lock: %s; remesh budget: %s" % (self.a.phase_lock or "off",
+                                                          "%g GiB" % self.remesh_gib() if self.remesh_gib() else "binary default"), ""]
+        timed = sorted((r for r in rows if r.get("t_gen_start")), key=lambda r: r["t_gen_start"])
+        if mode == "overlap" and len(timed) > 1:
+            gaps = [max(0.0, b["t_gen_start"] - a["t_gen_end"]) for a, b in zip(timed, timed[1:]) if a.get("t_gen_end")]
+            lines.append("- generation GPU idle between props: %.0f s total (post queue full or a failed prop)" % sum(gaps))
+            slow = sum(1 for a, b in zip(timed, timed[1:])
+                       if isinstance(a.get("post_s"), float) and isinstance(b.get("gen_s"), float) and a["post_s"] > b["gen_s"])
+            lines.append("- post slower than the next generation on %d prop(s): %s" %
+                         (slow, "a second post worker may help (T3)" if slow >= 2 else "one post worker keeps up"))
+            lines.append("")
+        lines += ["| asset | status | gen_s | queue_wait_s | post_s | finish_wait_s | finish_s | warnings |", "|---|---|---|---|---|---|---|---|"]
+        for r in rows:
+            f = lambda k: ("%.0f" % r[k]) if isinstance(r.get(k), float) else ""
+            lines.append("| %s | %s | %s | %s | %s | %s | %s | %s |" % (
+                r["asset"], r.get("status", ""), f("gen_s"), f("queue_wait_s"), f("post_s"), f("finish_wait_s"),
+                f("finish_s"), ";".join(sorted(r.get("_warn", ()))) or ""))
+        lines += ["", "**Verdict: %s**" % ("OK" if not problems else "CHECK - " + "; ".join(problems)), ""]
+        path = os.path.join(self.out, "batch_report.md")
+        with open(path, "w", encoding="utf-8", newline="\n") as f:
+            f.write("\n".join(lines))
+        return path
+
+
+def load_gpulock(path):
+    if not os.path.isfile(path):
+        raise SystemExit("--gpulock: %s not found (Expiramental3d tools\\gpulock.py)" % path)
+    spec = importlib.util.spec_from_file_location("gpulock", path)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+class GpuLocks:
+    """Hold the cross-project GPU locks (tools/gpulock.py protocol) for the whole batch. The lock records THIS
+    process's pid, so it goes stale (and Space Gothic may remove it) only if the runner dies. Reserve first so a
+    lower-priority owner cannot slip in between the acquires; release and unreserve in __exit__.
+    assume_held: the runner was started under `gpulock run` (or the Hub), which already holds the locks."""
+
+    def __init__(self, a, log=print):
+        self.a, self.log, self.mod = a, log, None
+        self.taken, self.reserved = [], []
+        self.phase_path = None
+        self.gpus = sorted({a.gen_gpu, a.post_gpu})
+
+    def __enter__(self):
+        a = self.a
+        if not a.gpulock:
+            return self
+        self.mod = m = load_gpulock(a.gpulock)
+        self.phase_path = os.path.join(str(m.lock_dir()), "gpu%d.phase" % a.post_gpu)
+        if a.gpulock_assume_held:
+            for g in self.gpus:
+                info = m.read_json(m.lock_path(g))
+                if not info or str(info.get("owner", "")).lower() != a.lock_owner.lower():
+                    self.fail("--gpulock-assume-held but GPU %d is not locked by %s" % (g, a.lock_owner))
+            return self
+        try:
+            if a.lock_hours > 0:
+                for g in self.gpus:
+                    ok, d = m.reserve(g, a.lock_owner, a.lock_hours, "arctic-batch " + a.out)
+                    if not ok:
+                        self.fail(d)
+                    self.reserved.append(g)
+            for g in self.gpus:
+                if not m.acquire(g, a.lock_owner, "arctic-batch " + a.out, wait=a.lock_wait, log=self.log):
+                    self.fail("GPU %d is busy" % g)
+                self.taken.append(g)
+        except BaseException:
+            self.__exit__(None, None, None)
+            raise
+        return self
+
+    def fail(self, msg):
+        print("arctic-batch: cannot lock the GPUs: %s" % msg, file=sys.stderr)
+        raise SystemExit(3)
+
+    def __exit__(self, *exc):
+        for g in self.taken:
+            self.mod.release(g, self.a.lock_owner, os.getpid())
+        for g in self.reserved:
+            self.mod.unreserve(g, self.a.lock_owner)
+        self.taken, self.reserved = [], []
+        return False
+
+
+def preflight(a, log=print):
+    """Refuse to start while something else holds VRAM we need: ComfyUI / llama-server on the 3060 Ti would push GPU
+    QEM into its 15-25 min CPU fallback, a browser or Blender on the 4070 eats the generation's thin margin.
+    nvidia-smi missing or failing = skipped with a line, never a failure."""
+    cmd = split_cmd(a.nvidia_smi) + ["--query-gpu=index,memory.used", "--format=csv,noheader,nounits"]
+    try:
+        out = subprocess.run(cmd, capture_output=True, text=True, timeout=30).stdout
+    except (OSError, subprocess.SubprocessError) as e:
+        log("preflight skipped (nvidia-smi unavailable: %s)" % e)
+        return
+    used = {}
+    for line in out.splitlines():
+        parts = [x.strip() for x in line.split(",")]
+        if len(parts) == 2 and parts[0].isdigit():
+            try:
+                used[int(parts[0])] = float(parts[1])
+            except ValueError:
+                pass
+    if not used:
+        log("preflight skipped (no nvidia-smi output)")
+        return
+    limits = {a.gen_gpu: a.gen_gpu_max_gb}
+    if a.finish_cmd or a.qem == "gpu":
+        limits[a.post_gpu] = a.post_gpu_max_gb
+    bad = ["GPU %d holds %.1f GB (limit %.1f GB)" % (g, used[g] / 1024.0, lim)
+           for g, lim in sorted(limits.items()) if g in used and used[g] > lim * 1024.0]
+    if bad:
+        print("arctic-batch preflight: %s. Close ComfyUI / llama-server / Blender / browsers, or pass --no-preflight." %
+              "; ".join(bad), file=sys.stderr)
+        raise SystemExit(4)
+    log("preflight ok: " + ", ".join("GPU %d %.1f GB used" % (g, used[g] / 1024.0) for g in sorted(used)))
 
 
 def cmd_run(a):
@@ -301,15 +551,20 @@ def cmd_run(a):
             raise SystemExit("duplicate asset name: " + n)
         names.add(n.lower())
         items.append((p, n))
-    b = Batch(a)
-    t0 = time.time()
-    try:
-        (b.run_serial if a.serial else b.run_overlap)(items)
-    except BaseException as e:  # serial-mode Ctrl+C; overlap mode handles its own
-        b.log("ABORT: %r" % (e,)); b.abort(); b.aborted = e
-    wall = time.time() - t0
+    with GpuLocks(a) as locks:  # SystemExit(3) when a GPU is busy or reserved; nothing has been started yet
+        if not a.phase_lock and locks.phase_path:
+            a.phase_lock = locks.phase_path
+        if a.preflight:
+            preflight(a)
+        b = Batch(a)
+        t0 = time.time()
+        try:
+            (b.run_serial if a.serial else b.run_overlap)(items)
+        except BaseException as e:  # serial-mode Ctrl+C; overlap mode handles its own
+            b.log("ABORT: %r" % (e,)); b.abort(); b.aborted = e
+        wall = time.time() - t0
     path = b.write_csv([n for _, n in items], wall)
-    b.log("wall %.1fs; csv %s" % (wall, path))
+    b.log("wall %.1fs; csv %s; report %s" % (wall, path, b.write_report([n for _, n in items], wall)))
     if b.aborted is not None:
         return 130 if isinstance(b.aborted, KeyboardInterrupt) else 2
     return 0 if all(r.get("status") == "ok" for r in b.rows.values()) and len(b.rows) == len(items) else 1
@@ -345,7 +600,18 @@ def build_parser():
     r.add_argument("--post-gpu", type=int, default=0, help="PCI index for post GPU QEM (3060 Ti = 0)")
     r.add_argument("--qem", choices=["gpu", "cpu"], default="gpu",
                    help="gpu = QEM on --post-gpu; cpu = hide all GPUs from post-replay (CPU QEM, slower)")
-    r.add_argument("--post-workers", type=int, default=2)
+    r.add_argument("--dump-mode", choices=["cleaned", "raw"], default="cleaned",
+                   help="cleaned = trellis-cli --dump-post (weld..drop runs in the generation process, post-replay remeshes "
+                        "again); raw = TRELLIS_DUMP_POST + TRELLIS_STOP_AFTER_POST_DUMP (generation exits after the texture "
+                        "decode; post-replay runs the serial CLI's exact chain). Do not pass --no-remesh / --fill-holes with raw")
+    r.add_argument("--hash", action="store_true",
+                   help="TRELLIS_POST_HASH=1 for generation and post: front_hash / dump_ok columns (T6 same-output check)")
+    r.add_argument("--fail-on-cpu-qem", action="store_true",
+                   help="treat post-replay's 'GPU decimation unavailable' CPU fallback as a failed post (default: warning)")
+    r.add_argument("--remesh-mem-gib", type=float, default=None,
+                   help="TRELLIS_REMESH_MEM_GIB for post-replay (default auto: 4 with one post worker; 0 = binary default)")
+    r.add_argument("--post-workers", type=int, default=1,
+                   help="default 1: two workers put two GPU QEMs on the 3060 Ti at once for no throughput gain at FS2 settings")
     r.add_argument("--total-threads", type=int, default=24, help="threads/worker = total/workers")
     r.add_argument("--max-queue", type=int, default=2, help="finished dumps allowed to wait for post")
     r.add_argument("--gen-timeout", type=float, default=3600, help="kill a trellis-cli running longer than this (s; 0 = never)")
@@ -356,7 +622,24 @@ def build_parser():
     r.add_argument("--finish-cmd", default="", help="optional Blender finish per GLB, template with {glb} {name} {out}, e.g. "
                    "'blender -b -P finish.py -- --in {glb} --out {out} --cycles-device CUDA --gpu-index 0'")
     r.add_argument("--finish-workers", type=int, default=1)
+    r.add_argument("--finish-retries", type=int, default=1, help="retries of a finish whose log shows an out-of-memory")
+    r.add_argument("--finish-retry-wait", type=float, default=30, help="seconds before that retry")
     r.add_argument("--finish-queue", type=int, default=4, help="GLBs allowed to wait for finish before post workers block")
+    r.add_argument("--gpulock", default="", metavar="PATH_TO_gpulock.py",
+                   help="hold the cross-project GPU locks for the batch (imports Expiramental3d tools/gpulock.py)")
+    r.add_argument("--gpulock-assume-held", action="store_true",
+                   help="the locks are already held by this owner (started under `gpulock run`); check, do not acquire")
+    r.add_argument("--lock-owner", default="expiramental3d")
+    r.add_argument("--lock-hours", type=float, default=3, help="reservation length per GPU (0 = no reservation)")
+    r.add_argument("--lock-wait", type=float, default=0, help="seconds to wait for a busy GPU (default: refuse at once)")
+    r.add_argument("--phase-lock", default="", metavar="PATH",
+                   help="file serialising QEM (post-replay) and the Cycles bake (finish.py) on the post GPU; exported as "
+                        "ARCTIC_GPU_PHASE_LOCK to post and finish only. With --gpulock: <lock dir>\\gpu<post-gpu>.phase")
+    r.add_argument("--no-preflight", dest="preflight", action="store_false",
+                   help="skip the check that the GPUs are free of other VRAM users")
+    r.add_argument("--nvidia-smi", default="nvidia-smi")
+    r.add_argument("--gen-gpu-max-gb", type=float, default=3.0, help="preflight: VRAM already used on the generation GPU")
+    r.add_argument("--post-gpu-max-gb", type=float, default=1.5, help="preflight: VRAM already used on the post GPU")
     r.add_argument("--serial", action="store_true", help="gen then post, one asset at a time (A/B baseline)")
     r.add_argument("--keep-dumps", action="store_true")
     c = sub.add_parser("compare", help="compare GLBs of two output dirs (timestamp masked)")
@@ -377,6 +660,10 @@ def main(argv=None):
         return 2
     if a.post_workers < 1 or a.max_queue < 1:
         raise SystemExit("--post-workers and --max-queue must be >= 1")
+    if a.dump_mode == "raw":
+        bad = [t for t in split_cmd(a.replay_extra) if t in ("--no-remesh", "--fill-holes", "--no-weld", "--no-fill")]
+        if bad:
+            raise SystemExit("--dump-mode raw needs the full replay chain; remove %s from --replay-extra" % " ".join(bad))
     return cmd_run(a)
 
 

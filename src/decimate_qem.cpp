@@ -19,6 +19,7 @@
 #include <unordered_map>
 #include "tri_bvh.h"
 #include "triangle_intersection.h"
+#include "phase_lock.h"
 
 namespace trellis {
 
@@ -354,7 +355,16 @@ void decimate_qem(const std::vector<float>& in_verts, int V0, const std::vector<
 #ifdef TRELLIS_HAVE_GPU_DECIMATE
     // Run the whole simplification on the GPU when a CUDA/HIP backend is built in; on any
     // failure (no device, alloc/kernel error) fall through to the validated CPU path.
-    if (!preserve_topology && !bounded_normals && !collision_guard && decimate_qem_gpu(in_verts, V0, in_faces, F0, target_faces, ov, of)) return;
+    // ARCTIC_GPU_PHASE_LOCK (include/phase_lock.h): hold the batch's cross-process lock for the GPU phase only, so a Cycles
+    // bake in another process cannot take the same 8 GB card's VRAM during it. Released before the CPU fallback.
+    if (!preserve_topology && !bounded_normals && !collision_guard) {
+        bool gpu_done;
+        {
+            PhaseLock phase_lock("qem");
+            gpu_done = decimate_qem_gpu(in_verts, V0, in_faces, F0, target_faces, ov, of);
+        }
+        if (gpu_done) return;
+    }
     // Any message above (e.g. "device kernel image is invalid" when the kernel was
     // built for a different GPU arch — issue #14) is non-fatal: the mesh is still
     // decimated correctly on the CPU below, just slower.

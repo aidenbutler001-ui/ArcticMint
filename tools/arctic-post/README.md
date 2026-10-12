@@ -77,6 +77,8 @@ xatlas and the GLB writer before the post-MT code). The GLB is compared with its
 field changes on every run, even for the untouched original code (checked in the cloud: with it masked, full-run GLBs
 are byte-identical at 1 and 4 threads and with `TRELLIS_POST_LEGACY=1`).
 
+Tail tolerance: if only the tail differs (GPU QEM is non-deterministic), each tail stage is compared with the legacy run on face count (`-TailFaceTolPct`, default 0.5%) and surface area (`-TailAreaTolPct`, default 0.1%): within both = `PASS (front exact; tail within ...)`, outside = `FAIL (tail outside tolerance)`. Hausdorff distance is not checked by the script.
+
 Needs: Windows 10/11, Visual Studio Build Tools (C++ x64), CMake, Ninja (or the one VS ships), a CUDA toolkit with its
 bin dir on PATH or `CUDA_PATH`, git, ~15 GB free disk (build + ggml + two dumps of 0.3-0.6 GB), and an idle GPU 1.
 Typical run time: build 20-40 min, then roughly 25-40 min per asset in the default `Raw` mode (full CLI run plus three replays).

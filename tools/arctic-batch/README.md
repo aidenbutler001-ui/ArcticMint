@@ -11,8 +11,8 @@ One asset today = GPU generation (~150 s) then CPU post (~65 s @24 threads); eac
 - **GPU worker**: `trellis-cli -i IMG -o DUMPDIR\NAME.unused.glb -m MODELS --res 1024 --gpu 1 --seed S --dump-post DUMPDIR\NAME.bin`
   with `CUDA_DEVICE_ORDER=PCI_BUS_ID`. `--dump-post` runs the CLI's weld -> fill_small_holes -> DC remesh -> clean -> drop
   floaters, writes the *already remeshed* mesh + sparse PBR volume and exits (no decimate/UV/bake/GLB).
-- **Post pool** (N workers, default 2): `post-replay DUMP OUT.glb --geometry-res 1024 --band 2 --faces 300000 --no-audit`
-  with `TRELLIS_POST_THREADS = total_threads / N` (default 24/2 = 12). Note post-replay re-remeshes the cleaned dump
+- **Post pool** (N workers, default 1; the parallel review found a second worker mostly contends for the 3060 Ti and the CPU, so raise it only after `batch_report.md` says it may help): `post-replay DUMP OUT.glb --geometry-res 1024 --band 2 --faces 300000 --no-audit`
+  with `TRELLIS_POST_THREADS = total_threads / N` (24 with one worker, 12 with two). Note post-replay re-remeshes the cleaned dump
   (as `pc-verify.ps1 -DumpMode Cleaned` does); that is the dump semantics requested, and it is the same input in serial and overlap mode.
 - **QEM device**: post-replay never runs ggml, so its GPU QEM would use CUDA device 0. The runner sets
   `CUDA_VISIBLE_DEVICES=<--post-gpu>` (default `0` = 3060 Ti, PCI order), keeping the 4070 SUPER free.
@@ -28,7 +28,7 @@ One asset today = GPU generation (~150 s) then CPU post (~65 s @24 threads); eac
 ```
 $b = "D:\ArcticMint\build"   # wherever trellis-cli.exe / post-replay.exe live
 powershell -ExecutionPolicy Bypass -File tools\arctic-batch\arctic-batch.ps1 run C:\AI\Expiramental3d\phase0\images -o D:\batch\overlap `
-  --cli $b\trellis-cli.exe --replay $b\post-replay.exe -m C:\AI\trellis\models --post-workers 2 --total-threads 24
+  --cli $b\trellis-cli.exe --replay $b\post-replay.exe -m C:\AI\trellis\models --post-workers 1 --total-threads 24
 powershell -ExecutionPolicy Bypass -File tools\arctic-batch\arctic-batch.ps1 run C:\AI\Expiramental3d\phase0\images -o D:\batch\serial --serial `
   --cli $b\trellis-cli.exe --replay $b\post-replay.exe -m C:\AI\trellis\models
 ```

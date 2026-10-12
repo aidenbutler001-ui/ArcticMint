@@ -1,0 +1,127 @@
+name: CI
+
+on:
+  pull_request:
+    paths: &paths
+      - "src/**"
+      - "include/**"
+      - "thirdparty/xatlas/**"
+      - "thirdparty/meshoptimizer/**"
+      - "thirdparty/fqms/**"
+      - "thirdparty/stb/**"
+      - "tools/arctic-post/**"
+      - ".github/workflows/ci.yml"
+  push:
+    branches: [main]
+    paths: *paths
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # CPU-only post-processing harness (no ggml, so no submodule checkout).
+  post-linux:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    env:
+      CCACHE_DIR: ${{ github.workspace }}/.ccache
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: false
+      - uses: actions/cache@v4
+        with:
+          path: .ccache
+          key: ccache-post-linux-${{ github.sha }}
+          restore-keys: ccache-post-linux-
+      - name: Install tools
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq ninja-build ccache python3-numpy
+      - name: Build harness
+        run: |
+          cmake -S tools/arctic-post -B build-post -G Ninja -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
+          ninja -C build-post
+          ccache -s
+      - name: Equivalence test (new vs legacy post stages, several thread counts)
+        run: build-post/post-equiv-test 30
+      - name: post-replay smoke and determinism
+        run: |
+          python3 tools/arctic-post/gen_dump.py d.bin --N 64 --pbr-res 64
+          build-post/post-replay d.bin a.glb --geometry-res 512 --faces 20000
+          build-post/post-replay d.bin b.glb --geometry-res 512 --faces 20000
+          sha256sum a.glb b.glb
+          python3 tools/arctic-post/glb_same.py a.glb b.glb
+
+  # PRs to main only: Windows minutes count double.
+  post-msvc:
+    if: github.event_name == 'pull_request' && github.base_ref == 'main'
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: false
+      - name: Build harness (MSVC)
+        run: |
+          cmake -S tools/arctic-post -B build-post -A x64
+          cmake --build build-post --config Release --parallel
+      - name: Equivalence test
+        run: build-post\Release\post-equiv-test.exe 10
+
+  # Full engine build: needs the private ggml submodule, so it only runs once
+  # the GGML_DEPLOY_KEY secret exists (see PR description).
+  gate:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 2
+    outputs:
+      has_key: ${{ steps.k.outputs.has_key }}
+    steps:
+      - id: k
+        env:
+          KEY: ${{ secrets.GGML_DEPLOY_KEY }}
+        run: echo "has_key=$([ -n "$KEY" ] && echo true || echo false)" >> "$GITHUB_OUTPUT"
+
+  engine-linux:
+    needs: gate
+    env:
+      CCACHE_DIR: ${{ github.workspace }}/.ccache
+    if: needs.gate.outputs.has_key == 'true' && (github.event_name == 'push' || github.event.pull_request.head.repo.full_name == github.repository)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: false
+      - name: Load the ggml deploy key
+        env:
+          KEY: ${{ secrets.GGML_DEPLOY_KEY }}
+        run: |
+          # Tolerate Windows line endings and a missing final newline from a pasted key.
+          mkdir -p ~/.ssh && chmod 700 ~/.ssh
+          printf '%s\n' "$KEY" | tr -d '\r' > ~/.ssh/ggml_deploy
+          chmod 600 ~/.ssh/ggml_deploy
+          if ! grep -q 'BEGIN OPENSSH PRIVATE KEY' ~/.ssh/ggml_deploy; then
+            echo "::error::GGML_DEPLOY_KEY is not an OpenSSH private key (the .pub half, or the BEGIN line missing?)"
+            exit 1
+          fi
+          ssh-keygen -l -f ~/.ssh/ggml_deploy   # prints only the fingerprint
+          ssh-keyscan -t ed25519 github.com >> ~/.ssh/known_hosts 2>/dev/null
+          git config --global core.sshCommand "ssh -i $HOME/.ssh/ggml_deploy -o IdentitiesOnly=yes"
+      - name: Fetch ggml over SSH
+        run: |
+          git config --global url."git@github.com:aidenbutler001-ui/ggml".insteadOf "https://github.com/aidenbutler001-ui/ggml"
+          git submodule update --init --depth 1 thirdparty/ggml
+      - uses: actions/cache@v4
+        with:
+          path: .ccache
+          key: ccache-engine-linux-${{ github.sha }}
+          restore-keys: ccache-engine-linux-
+      - name: Build (CPU only)
+        run: |
+          sudo apt-get update -qq && sudo apt-get install -y -qq ninja-build ccache
+          cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
+          ninja -C build

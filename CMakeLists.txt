@@ -465,6 +465,7 @@ set_target_properties(trellis-test-pixal3d PROPERTIES BUILD_RPATH "${GGML_RPATH}
 
 # --ss-only helpers and the arg parser: pure C++, no ggml, so it also builds and runs without a GPU.
 add_executable(trellis-test-ss-only src/test_ss_only.cpp src/ss_bbox.cpp src/trellis_args.cpp)
+target_include_directories(trellis-test-ss-only PRIVATE include)
 
 add_executable(trellis-cli src/trellis_cli_main.cpp src/trellis_cli.cpp src/trellis_args.cpp)
 target_link_libraries(trellis-cli PRIVATE trellis_core)

@@ -153,7 +153,13 @@ Mesh remesh_narrow_band_dc(const float* iverts, int64_t iV, const int32_t* iface
         // here before any geometry/BVH memory.  Cap only the replication memory;
         // the OR result and therefore the remesh are bit-for-bit equivalent.
         const size_t bytes_per_part = cand.size() * sizeof(uint64_t);
-        const size_t parts_budget = (size_t)1024 * 1024 * 1024; // 1 GiB
+        // TRELLIS_REMESH_MEM_GIB raises (or lowers) that budget: 4 gives 24 workers at res 1024 for 3 GiB of RAM. Default 1 GiB.
+        double budget_gib = 1.0;
+        if (const char* e = std::getenv("TRELLIS_REMESH_MEM_GIB")) {
+            const double v = std::atof(e);
+            if (v >= 0.001 && v <= 64.0) budget_gib = v;
+        }
+        const size_t parts_budget = (size_t)(budget_gib * 1024.0 * 1024.0 * 1024.0);
         const int mem_workers = bytes_per_part ? (int)std::max<size_t>(1, parts_budget / bytes_per_part) : hw;
         const int nt = std::max(1, std::min(hw, mem_workers));
         if (nt < hw) {

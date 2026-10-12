@@ -257,9 +257,10 @@ class Parallel(unittest.TestCase):
         self.assertEqual(sorted(g for g in (0, 1) if mod.read_json(mod.lock_path(g))), [0, 1])  # not released: not ours
 
     def test_explicit_phase_lock_without_gpulock(self):
-        out = self.out(); pl = os.path.join(self.d, "x.phase")
+        out = self.out(); pl = os.path.join(self.d, "new", "dir", "x.phase")
         self.assertEqual(run(self.imgs, out, "--phase-lock", pl), 0)
         self.assertEqual(json.load(open(os.path.join(out, "a.part.glb.env.json")))["ARCTIC_GPU_PHASE_LOCK"], pl)
+        self.assertTrue(os.path.isdir(os.path.dirname(pl)))
 
     @unittest.skipUnless(os.environ.get("GPULOCK_PY") and os.path.isfile(os.environ.get("GPULOCK_PY", "")),
                          "set GPULOCK_PY to Expiramental3d tools/gpulock.py to check the real module")

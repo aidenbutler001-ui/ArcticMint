@@ -554,6 +554,8 @@ def cmd_run(a):
     with GpuLocks(a) as locks:  # SystemExit(3) when a GPU is busy or reserved; nothing has been started yet
         if not a.phase_lock and locks.phase_path:
             a.phase_lock = locks.phase_path
+        if a.phase_lock:  # include/phase_lock.h opens the file but does not create directories
+            os.makedirs(os.path.dirname(os.path.abspath(a.phase_lock)), exist_ok=True)
         if a.preflight:
             preflight(a)
         b = Batch(a)

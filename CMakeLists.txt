@@ -95,6 +95,7 @@ add_library(trellis_core STATIC
   src/dit.cpp
   src/flow_runner.cpp
   src/ss_decoder.cpp
+  src/ss_bbox.cpp
   src/mesh_glb.cpp
   src/dinov3.cpp
   src/pixal3d.cpp
@@ -461,6 +462,9 @@ set_target_properties(trellis-test-shape-dec PROPERTIES BUILD_RPATH "${GGML_RPAT
 add_executable(trellis-test-pixal3d src/test_pixal3d.cpp src/trellis_args.cpp)
 target_link_libraries(trellis-test-pixal3d PRIVATE trellis_core)
 set_target_properties(trellis-test-pixal3d PROPERTIES BUILD_RPATH "${GGML_RPATH}")
+
+# --ss-only helpers and the arg parser: pure C++, no ggml, so it also builds and runs without a GPU.
+add_executable(trellis-test-ss-only src/test_ss_only.cpp src/ss_bbox.cpp src/trellis_args.cpp)
 
 add_executable(trellis-cli src/trellis_cli_main.cpp src/trellis_cli.cpp src/trellis_args.cpp)
 target_link_libraries(trellis-cli PRIVATE trellis_core)

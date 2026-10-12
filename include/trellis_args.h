@@ -101,6 +101,8 @@ struct TrellisParams {
                                 // i32 faces[F*3]; i32 coords[Mv*3]; f32 pbr6[Mv*6];
                                 // same layout as the TRELLIS_DUMP_POST debug env)
     bool bg_only = false;       // background removal only: write the cutout and skip the rest
+    bool ss_only = false;       // stop after the sparse-structure stage: write <out>_ss.json (voxel bbox per seed), no mesh
+    int  ss_seeds = 1;          // with --ss-only: seeds seed, seed+1, ... seed+N-1 share one preprocess + DINOv3 pass
 
     int  steps    = 0;          // flow sampler steps; 0 = model default (12). Lowering this
                                 //   trades output quality for turnaround and is meant for

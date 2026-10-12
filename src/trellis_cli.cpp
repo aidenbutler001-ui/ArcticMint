@@ -9,6 +9,7 @@
 #include "pixal3d.h"
 #include "flow_runner.h"
 #include "ss_decoder.h"
+#include "ss_bbox.h"
 #include "shape_decoder.h"
 #include "dual_grid.h"
 #include "mesh_glb.h"
@@ -337,7 +338,14 @@ int trellis_run(const trellis::TrellisParams& cfg) {
 
     printf("[3/6] sparse-structure flow + decode\n");
     vector<std::array<int,3>> coords;
+    // --ss-only --ss-seeds N repeats this stage for seeds run_seed .. run_seed+N-1 and stops after it. Re-seeding rng
+    // here makes seed S draw exactly the noise a normal --seed S run draws first, so its structure is that run's. A
+    // normal run goes through the loop once, unchanged.
+    std::vector<std::pair<uint32_t, trellis::SsBox>> ss_runs;
+    const int ss_n = cfg.ss_only ? std::max(1, cfg.ss_seeds) : 1;
+    for (int ss_i = 0; ss_i < ss_n; ++ss_i)
     {
+        if (cfg.ss_only) rng.seed(run_seed + (uint32_t)ss_i);
         trellis::Model m = trellis::Model::load(M + FP + "ss_flow.gguf", gpu);
         trellis::DiTParams p; p.in_ch = 8; p.out_ch = 8; p.d_cond = 1024; p.cast_f32 = F32;
         p.proj_ch = proj_ch_of(m); p.proj_mode = p.proj_ch > 0;
@@ -364,6 +372,26 @@ int trellis_run(const trellis::TrellisParams& cfg) {
         trellis::g_backend = saved_backend;
         vector<float> logits = trellis::ss_decode(d, zdec); d.free();
         coords = trellis::ss_coords(logits, 64, 32);
+        if (cfg.ss_only) {
+            ss_runs.emplace_back(run_seed + (uint32_t)ss_i, trellis::ss_bbox(coords));
+            const trellis::SsBox& sb = ss_runs.back().second;
+            printf("      seed %u: voxels %d, extent %d x %d x %d (x = width, y = depth, z = up)\n",
+                   ss_runs.back().first, sb.voxels, sb.extent[0], sb.extent[1], sb.extent[2]);
+        }
+    }
+    if (cfg.ss_only) {
+        const std::string ss_path = outglb.substr(0, outglb.find_last_of('.')) + "_ss.json";
+        const std::string doc = trellis::ss_json(img, trellis::model_family_name(cfg.family), cfg.steps > 0 ? cfg.steps : 12,
+                                                 cfg.gss, 32, ss_runs);
+        FILE* sf = fopen(ss_path.c_str(), "wb");
+        if (!sf || fwrite(doc.data(), 1, doc.size(), sf) != doc.size()) {
+            fprintf(stderr, "[ss-only] could not write %s\n", ss_path.c_str());
+            if (sf) fclose(sf);
+            return 1;
+        }
+        fclose(sf);
+        printf("[ss-only] %zu seed(s) -> %s (%.1fs)\n", ss_runs.size(), ss_path.c_str(), now() - t0);
+        return 0;
     }
     if (cfg.voxply) { FILE*f=fopen("out/myvox.ply","wb"); fprintf(f,"ply\nformat binary_little_endian 1.0\nelement vertex %zu\nproperty float x\nproperty float y\nproperty float z\nelement face 0\nproperty list uchar int vertex_indices\nend_header\n",coords.size()); for(auto&c:coords){float p[3]={(c[0]+0.5f)/32-0.5f,(c[1]+0.5f)/32-0.5f,(c[2]+0.5f)/32-0.5f}; fwrite(p,4,3,f);} fclose(f); }
     printf("      active voxels @res32 = %d\n", (int)coords.size());

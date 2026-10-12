@@ -144,6 +144,10 @@ void print_usage(const char* argv0, bool server) {
         "                          exit (skips remesh/decimate/UV/bake/GLB) -- for external\n"
         "                          post-processing pipelines\n"
         "      --bg-only           background removal only: write the cutout and skip the rest\n"
+        "      --ss-only           stop after the sparse-structure stage and write <out>_ss.json: the\n"
+        "                          active-voxel bounding box (W/D/H in 1/32 cells) per seed, no mesh\n"
+        "      --ss-seeds N        with --ss-only: run seeds SEED .. SEED+N-1 (default 1); seed S gives\n"
+        "                          the same structure as a normal run with --seed S and the same --steps\n"
         "      --retopo GRID FIRST_FACES FINAL_FACES  native quad export (Linux, retopo build)\n"
         "      --retopo-atlas PX   quad atlas size: 1024, 2048, 4096 (default 4096)\n"
         "      --retopo-no-weld-fill  skip initial weld/fill before tetra remesh\n"
@@ -238,6 +242,11 @@ bool parse_args(int argc, char** argv, TrellisParams& p) {
                                                          : (std::strcmp(v,"on")==0 || std::strcmp(v,"1")==0 || std::strcmp(v,"true")==0) ? 1 : -1; }
         else if (a == "--dump-bg")              { p.dump_bg = true; }
         else if (a == "--bg-only")              { p.bg_only = true; p.dump_bg = true; }
+        else if (a == "--ss-only")              { p.ss_only = true; }
+        else if (a == "--ss-seeds")             { const char* v = need(a.c_str()); if (!v) return false;
+                                                  if (!integer(v, p.ss_seeds)) return false;
+                                                  if (p.ss_seeds < 1 || p.ss_seeds > 4096) {
+                                                      fprintf(stderr, "[trellis] --ss-seeds must be 1..4096\n"); return false; } }
         else if (a == "--retopo")               { const char* g=need(a.c_str()); if (!g) return false;
                                                   const char* f=need(a.c_str()); if (!f) return false;
                                                   const char* q=need(a.c_str()); if (!q) return false;
@@ -276,6 +285,10 @@ bool parse_args(int argc, char** argv, TrellisParams& p) {
     {
         std::string error;
         if (!check_faces_compat(p, error)) { fprintf(stderr, "[trellis] %s\n", error.c_str()); return false; }
+    }
+    if (!p.ss_only && p.ss_seeds != 1) {
+        fprintf(stderr, "[trellis] --ss-seeds requires --ss-only\n");
+        return false;
     }
     if (!p.retopo && p.retopo_no_weld_fill) {
         fprintf(stderr,"[trellis] --retopo-no-weld-fill requires --retopo\n");

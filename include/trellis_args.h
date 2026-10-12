@@ -108,6 +108,9 @@ struct TrellisParams {
                                 //   trades output quality for turnaround and is meant for
                                 //   backend bring-up: a CPU and an NPU run at the same low
                                 //   step count are still directly comparable to each other.
+    int  steps_ss = 0;          // sparse-structure flow only: 0 = same as `steps`. A prototype run can sample the
+                                //   shape and texture flows at 12 steps and keep the structure (and the W x D x H it
+                                //   fixes) identical to a `--ss-only --steps 24` sweep.
     int  sched = -1;            // multi-backend scheduler: -1 auto (on unless the primary
                                 // backend is the CPU), 0 off, 1 on. Required for partial
                                 // op-coverage accelerators like the Hexagon NPU.

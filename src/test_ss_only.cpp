@@ -51,6 +51,10 @@ int main() {
     { trellis::TrellisParams p; CHECK(parse({"a.png", "o.glb", "--ss-only", "--ss-seeds", "16", "--seed", "3", "--steps", "24"}, p));
       CHECK(p.ss_only && p.ss_seeds == 16 && p.seed == 3 && p.steps == 24); }
     { trellis::TrellisParams p; CHECK(parse({"a.png", "o.glb", "--ss-seeds", "4", "--ss-only"}, p) && p.ss_seeds == 4); }   // order does not matter
+    { trellis::TrellisParams p; CHECK(parse({"a.png", "o.glb"}, p)); CHECK(p.steps_ss == 0); }
+    { trellis::TrellisParams p; CHECK(parse({"a.png", "o.glb", "--steps", "12", "--steps-ss", "24"}, p)); CHECK(p.steps == 12 && p.steps_ss == 24); }
+    { trellis::TrellisParams p; CHECK(parse({"a.png", "o.glb", "--steps-ss", "24", "--steps", "12"}, p)); CHECK(p.steps == 12 && p.steps_ss == 24); }
+    { trellis::TrellisParams p; CHECK(!parse({"a.png", "o.glb", "--steps-ss"}, p)); }
     for (const char* v : {"0", "-1", "4097", "x", "2x", ""}) {
         trellis::TrellisParams p; CHECK(!parse({"a.png", "o.glb", "--ss-only", "--ss-seeds", v}, p));
     }

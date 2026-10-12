@@ -116,6 +116,10 @@ void print_usage(const char* argv0, bool server) {
         "      --steps N           flow sampler steps (default 12). Lower is faster and\n"
         "                          rougher; useful for backend bring-up, where a CPU and\n"
         "                          an NPU run at the same N stay directly comparable.\n"
+        "      --steps-ss N        sampler steps for the sparse-structure flow only (default:\n"
+        "                          the --steps value). With --steps 12 --steps-ss 24 the shape and\n"
+        "                          texture flows run cheap while the structure, and so the\n"
+        "                          object's W x D x H, matches a `--ss-only --steps 24` sweep.\n"
         "      --res 512|1024|1536 geometry resolution\n"
         "      --max-tokens N      HR token budget              (default 49152)\n"
         "      --bg-removal MODE   threshold | birefnet   (default: auto -- a pre-matted\n"
@@ -215,6 +219,7 @@ bool parse_args(int argc, char** argv, TrellisParams& p) {
         else if (a == "-t" || a == "--threads") { const char* v = need(a.c_str()); if (!v) return false; p.threads = atoi(v); }
         else if (a == "-v" || a == "--verbose") { p.verbose = true; }
         else if (a == "--steps")                { const char* v = need(a.c_str()); if (!v) return false; p.steps = atoi(v); }
+        else if (a == "--steps-ss")             { const char* v = need(a.c_str()); if (!v) return false; p.steps_ss = atoi(v); }
         else if (a == "--sched")                { const char* v = need(a.c_str()); if (!v) return false;
                                                   if (strcmp(v, "on") == 0 || strcmp(v, "1") == 0) p.sched = 1;
                                                   else if (strcmp(v, "off") == 0 || strcmp(v, "0") == 0) p.sched = 0;

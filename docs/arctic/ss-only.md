@@ -18,7 +18,9 @@ trellis-cli IMAGE.png OUT.glb --ss-only [--ss-seeds N] --seed S --steps 24 --gpu
 - Resolution: one cell is 1/32 of the long axis, about 3% of it; a thin axis (a winch's 1.0 m depth on a 2.8 m width is
   ~11 cells) is good to about +-1 cell, so read small differences between seeds with that in mind. The shape and texture
   stages refine the surface inside this box; they do not move it by more than a cell or so [E, unchecked].
-- Same `--steps` and `--gss` as production, or the screened structure is not the production structure.
+- Same `--steps` and `--gss` as production, or the screened structure is not the production structure. To make the later flows cheaper without
+  moving the structure, run the sweep with `--steps 24` and the full run with `--steps 12 --steps-ss 24`: `--steps-ss` sets the sparse-structure flow
+  only (default: the `--steps` value), so seed S gives the sweep's structure and only the shape and texture flows run at 12 steps.
 - `tools/ss_sweep.py` in the Expiramental3d repo runs this over a folder of images and ranks the seeds against a spec size.
 
 Tests: `trellis-test-ss-only` (CPU only, no models): box maths, JSON writer, flag parsing.

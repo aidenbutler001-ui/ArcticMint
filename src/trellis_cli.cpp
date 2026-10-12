@@ -355,7 +355,7 @@ int trellis_run(const trellis::TrellisParams& cfg) {
         if (pix) pc = build_proj(16, 512, 0, p.proj_ch, nullptr);
         trellis::DitRunner* run = trellis::make_dense_runner(m, p, 16, Lc);
         trellis::FlowFwd fwd = [&](const vector<float>& x, float ts, const trellis::FlowCond& c){ return run->forward(x, ts, c); };
-        trellis::SamplerParams sp; sp.steps=(cfg.steps>0?cfg.steps:12); sp.guidance_strength=cfg.gss; sp.guidance_rescale=0.7f; sp.gi0=0.6f; sp.gi1=1.0f; sp.rescale_t=5.0f;
+        trellis::SamplerParams sp; sp.steps=(cfg.steps_ss>0?cfg.steps_ss:cfg.steps>0?cfg.steps:12); sp.guidance_strength=cfg.gss; sp.guidance_rescale=0.7f; sp.gi0=0.6f; sp.gi1=1.0f; sp.rescale_t=5.0f;
         vector<float> z = trellis::sample_flow(fwd, noise(8*4096),
                               trellis::FlowCond(cond.data(), pix ? pc.proj.data()     : nullptr),
                               trellis::FlowCond(neg.data(),  nullptr), sp);  // [8,4096] ne0=8
@@ -381,7 +381,7 @@ int trellis_run(const trellis::TrellisParams& cfg) {
     }
     if (cfg.ss_only) {
         const std::string ss_path = outglb.substr(0, outglb.find_last_of('.')) + "_ss.json";
-        const std::string doc = trellis::ss_json(img, trellis::model_family_name(cfg.family), cfg.steps > 0 ? cfg.steps : 12,
+        const std::string doc = trellis::ss_json(img, trellis::model_family_name(cfg.family), cfg.steps_ss > 0 ? cfg.steps_ss : cfg.steps > 0 ? cfg.steps : 12,
                                                  cfg.gss, 32, ss_runs);
         FILE* sf = fopen(ss_path.c_str(), "wb");
         if (!sf || fwrite(doc.data(), 1, doc.size(), sf) != doc.size()) {

@@ -159,6 +159,83 @@ class LiveQueueTests(unittest.TestCase):
         return tb.make_imgs(d, ["z"])
 
 
+class SlotYield(unittest.TestCase):
+    """--slot-yield: another owner `want`s a card; the runner finishes the job on it, hands the card over, takes it back."""
+    GPULOCKS = [os.path.join(HERE, "fake_gpulock.py")]
+    if os.environ.get("GPULOCK_PY") and os.path.isfile(os.environ.get("GPULOCK_PY", "")):
+        GPULOCKS.append(os.environ["GPULOCK_PY"])
+
+    def setUp(self):
+        self.t = tempfile.TemporaryDirectory(); self.d = self.t.name
+        os.environ["FAKE_GEN_S"] = "1.0"; os.environ["FAKE_POST_S"] = "0.2"
+
+    def tearDown(self):
+        os.environ.pop("GPULOCK_DIR", None); self.t.cleanup()
+
+    @staticmethod
+    def wait_for(fn, what, timeout=40):
+        t0 = time.time()
+        while time.time() - t0 < timeout:
+            if fn():
+                return
+            time.sleep(0.1)
+        raise AssertionError("timed out waiting for " + what)
+
+    def holder(self, mod, g):
+        i = mod.read_json(mod.lock_path(g))
+        return i.get("owner") if i else None
+
+    def run_case(self, glpath, card, want_kwargs):
+        os.environ["GPULOCK_DIR"] = os.path.join(self.d, "locks-" + str(abs(hash(glpath)) % 1000))
+        mod = tb.ab.load_gpulock(glpath)
+        imgs = tb.make_imgs(os.makedirs(os.path.join(self.d, "i")) or os.path.join(self.d, "i"), list("abcdef"))
+        ref, out = os.path.join(self.d, "ref"), os.path.join(self.d, "out")
+        self.assertEqual(tb.run(imgs, ref, "--gen-lanes", "2", "--lane2-speed", "1.0", "--min-gain-s", "0"), 0)
+        res = {}
+        th = threading.Thread(target=lambda: res.setdefault("rc", tb.run(
+            imgs, out, "--gen-lanes", "2", "--lane2-speed", "1.0", "--min-gain-s", "0", "--gpulock", glpath,
+            "--slot-yield", "--slot-poll-s", "0.2")))
+        th.start()
+        self.wait_for(lambda: self.holder(mod, card) == "expiramental3d", "the runner to hold GPU %d" % card)
+        ok, why = mod.want(card, "space-gothic", 5, "rt test")
+        self.assertTrue(ok, why)
+        # a second owner asking for the same card is refused while the first request stands
+        ok2, _ = mod.want(card, "someone-else", 5, "x")
+        self.assertFalse(ok2)
+        self.wait_for(lambda: self.holder(mod, card) is None, "the runner to release GPU %d" % card)
+        self.assertFalse(mod.res_path(card).exists() if hasattr(mod, "res_path") else False)    # reservation went with it
+        other = 1 - card
+        self.assertEqual(self.holder(mod, other), "expiramental3d")                            # the other card stays ours
+        self.assertTrue(mod.acquire(card, "space-gothic", "rt test"))                           # their run
+        time.sleep(1.5)
+        self.assertEqual(self.holder(mod, card), "space-gothic")                               # no preemption, no grab-back
+        mod.release(card, "space-gothic")                                                     # their run ends; the want is left behind
+        self.wait_for(lambda: self.holder(mod, card) == "expiramental3d", "the runner to take GPU %d back" % card)
+        self.assertIsNone(mod.foreign_demand(card, "expiramental3d"))                           # served request cleaned up
+        th.join(120); self.assertFalse(th.is_alive())
+        self.assertEqual(res["rc"], 0)
+        self.assertTrue(all(x["status"] == "ok" for x in tb.rows(out)[:-1]))
+        self.assertEqual(tb.ab.cmd_compare(type("A", (), {"dir_a": ref, "dir_b": out})), 0)    # yielding changed no output
+        self.assertIsNone(self.holder(mod, 0)); self.assertIsNone(self.holder(mod, 1))         # all released at the end
+
+    def test_yield_lane_b_card_and_take_it_back(self):
+        for gl in self.GPULOCKS:
+            with self.subTest(gpulock=os.path.basename(gl)):
+                self.setUp(); self.run_case(gl, 0, {})
+
+    def test_yield_lane_a_card(self):
+        for gl in self.GPULOCKS:
+            with self.subTest(gpulock=os.path.basename(gl)):
+                self.setUp(); self.run_case(gl, 1, {})
+
+    def test_validation_and_default_unchanged(self):
+        imgs = tb.make_imgs(os.makedirs(os.path.join(self.d, "i")) or os.path.join(self.d, "i"), ["a"])
+        with self.assertRaises(SystemExit):
+            tb.run(imgs, os.path.join(self.d, "o"), "--slot-yield")                              # needs --gen-lanes 2 and --gpulock
+        with self.assertRaises(SystemExit):
+            tb.run(imgs, os.path.join(self.d, "o"), "--gen-lanes", "2", "--slot-yield")
+
+
 class Gate(unittest.TestCase):
     def test_admission_and_release(self):
         g = dsp.VramGate({0: 8.0}, {0: 0.0}, margin_gb=0.4)

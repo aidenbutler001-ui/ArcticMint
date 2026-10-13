@@ -144,6 +144,35 @@ class LiveQueueTests(unittest.TestCase):
         self.assertLess(start["u"], start["e"]); self.assertLess(start["u"], start["a"])   # urgent beat the earlier normal jobs
         self.assertEqual(tb.ab.cmd_compare(type("A", (), {"dir_a": ref, "dir_b": live})), 0)
 
+    def test_per_job_options_reach_only_that_job(self):
+        import live_queue as lq
+        img = tb.make_imgs(os.makedirs(os.path.join(self.d, "i")) or os.path.join(self.d, "i"), ["plain", "draft"])
+        out = os.path.join(self.d, "o")
+        lq.submit(self.q, os.path.join(img, "draft.png"), priority=0, opts={"res": 512, "seed": 9, "faces": 150000,
+                                                                          "cli_extra": "--steps 12 --steps-ss 24"})
+        first = os.path.join(self.d, "first"); os.makedirs(first)
+        os.replace(os.path.join(img, "plain.png"), os.path.join(first, "plain.png"))
+        lq.close(self.q)
+        self.assertEqual(tb.run(first, out, "--gen-lanes", "2", "--lane2-speed", "1.0", "--min-gain-s", "0",
+                                "--queue-dir", self.q, "--res", "1024", "--seed", "1", "--faces", "400000"), 0)
+        def argv(name, kind):
+            for line in open(os.path.join(out, "logs", "%s.%s.log" % (name, kind)), errors="replace"):
+                if line.startswith("ARGS "):
+                    j = json.loads(line[5:]); return j["argv"] if isinstance(j, dict) else j
+        g, pl = argv("draft", "gen"), argv("plain", "gen")
+        self.assertEqual((g[g.index("--res") + 1], g[g.index("--seed") + 1], g[-4:]), ("512", "9", ["--steps", "12", "--steps-ss", "24"]))
+        self.assertEqual((pl[pl.index("--res") + 1], pl[pl.index("--seed") + 1], "--steps" in pl), ("1024", "1", False))
+        pd, pp = argv("draft", "post"), argv("plain", "post")
+        self.assertEqual((pd[pd.index("--geometry-res") + 1], pd[pd.index("--faces") + 1]), ("512", "150000"))
+        self.assertEqual((pp[pp.index("--geometry-res") + 1], pp[pp.index("--faces") + 1]), ("1024", "400000"))
+
+    def test_bad_job_options_are_refused(self):
+        import live_queue as lq
+        img = tb.make_imgs(os.makedirs(os.path.join(self.d, "i")) or os.path.join(self.d, "i"), ["x"])
+        for bad in ({"ress": 512}, {"res": "big"}, {"res": 5}, {"cli_extra": 3}):
+            with self.assertRaises(ValueError):
+                lq.submit(self.q, os.path.join(img, "x.png"), opts=bad)
+
     def test_idle_exit_and_validation(self):
         import contextlib, io
         os.makedirs(self.q)

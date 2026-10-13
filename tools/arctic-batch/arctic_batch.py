@@ -164,18 +164,21 @@ class Batch:
     # -- commands -----------------------------------------------------------
     def gen_cmd(self, img, name, dump, lane2=False):
         a = self.a
+        o = getattr(self, "job_opts", {}).get(name, {})   # per-job overrides from the live queue (OPT-IN; empty = unchanged)
         cmd = self.cli + ["-i", img, "-o", os.path.join(self.dumps, name + ".unused.glb"),
-                          "-m", a.models, "--res", str(a.res), "--gpu", "0" if lane2 else str(a.gen_gpu),
-                          "--seed", str(a.seed)]
+                          "-m", a.models, "--res", str(o.get("res", a.res)), "--gpu", "0" if lane2 else str(a.gen_gpu),
+                          "--seed", str(o.get("seed", a.seed))]
         if a.dump_mode == "cleaned":
             cmd += ["--dump-post", dump]
-        return cmd + split_cmd(a.cli_extra)
+        return cmd + split_cmd(a.cli_extra) + split_cmd(o.get("cli_extra", ""))
 
-    def post_cmd(self, dump, glb):
+    def post_cmd(self, dump, glb, name=None):
         a = self.a
-        band = max(1, a.res // 512)
-        return self.replay + [dump, glb, "--geometry-res", str(a.res), "--band", str(band),
-                              "--faces", str(a.faces), "--no-audit"] + split_cmd(a.replay_extra)
+        o = getattr(self, "job_opts", {}).get(name, {})
+        res = o.get("res", a.res)
+        band = max(1, res // 512)
+        return self.replay + [dump, glb, "--geometry-res", str(res), "--band", str(band),
+                              "--faces", str(o.get("faces", a.faces)), "--no-audit"] + split_cmd(a.replay_extra)
 
     def run_logged(self, cmd, env, log, timeout=None, low_priority=False):
         """Run a child with its output in a log. Returns the exit code, or -9 on timeout / -15 on abort.
@@ -269,7 +272,7 @@ class Batch:
         plog = os.path.join(self.logs, name + ".post.log")
         gpu = self.place_phase(name, "post", self.a.post_need_gb, row)
         try:
-            rc = self.run_logged(self.post_cmd(dump, tmp), self.post_env(threads, gpu), plog,
+            rc = self.run_logged(self.post_cmd(dump, tmp, name), self.post_env(threads, gpu), plog,
                                  timeout=self.a.post_timeout, low_priority=True)
         finally:
             self.unplace_phase(gpu)
@@ -412,6 +415,7 @@ class Batch:
             import live_queue
             live = live_queue.LiveQueue(a.queue_dir, self.log)
             self.live_names = []
+            self.job_opts = {}
         idle = {"since": None}
         self.gate = dsp.VramGate({g: caps.get(g, 12.0) for g in (a.gen_gpu, a.lane2_gpu)}, base, a.vram_margin_gb)
         img_of = dict((n, p) for p, n in items)
@@ -428,6 +432,8 @@ class Batch:
             for jd in live.poll(list(img_of)):
                 img_of[jd["name"]] = jd["image"]
                 self.live_names.append(jd["name"])
+                if jd.get("opts"):
+                    self.job_opts[jd["name"]] = jd["opts"]
                 pend.append(dsp.Job(jd["name"], jd["est_s"] if jd["est_s"] is not None else est.get(jd["name"]),
                                     float(jd["vram_gb"] if jd["vram_gb"] is not None else a.gen_need_gb), jd["priority"], jd["pin"]))
                 self.log("%s: queued live (priority %d%s)" % (jd["name"], jd["priority"], ", pin " + jd["pin"] if jd["pin"] else ""))
@@ -916,6 +922,9 @@ def build_parser():
     sb.add_argument("--priority", type=int, default=0, help="higher starts first (default 0; 100 = urgent)")
     sb.add_argument("--est-s", type=float, default=None); sb.add_argument("--vram-gb", type=float, default=None)
     sb.add_argument("--pin", choices=["A", "B"], default=None)
+    sb.add_argument("--job-res", type=int, default=None, help="this job only: --res (a draft is 512)")
+    sb.add_argument("--job-seed", type=int, default=None); sb.add_argument("--job-faces", type=int, default=None)
+    sb.add_argument("--job-cli-extra", default=None, help="this job only: extra trellis-cli args, appended after the batch's --cli-extra")
     cl = sub.add_parser("close", help="no more jobs for the live queue: the batch finishes what is queued and exits")
     cl.add_argument("--queue-dir", required=True)
     c = sub.add_parser("compare", help="compare GLBs of two output dirs (timestamp masked)")
@@ -937,7 +946,8 @@ def main(argv=None):
             live_queue.close(a.queue_dir)
             print("closed " + a.queue_dir)
         else:
-            print(live_queue.submit(a.queue_dir, a.image, a.name, a.priority, a.est_s, a.vram_gb, a.pin))
+            print(live_queue.submit(a.queue_dir, a.image, a.name, a.priority, a.est_s, a.vram_gb, a.pin,
+                                    opts={"res": a.job_res, "seed": a.job_seed, "faces": a.job_faces, "cli_extra": a.job_cli_extra}))
         return 0
     if a.cmd != "run":
         build_parser().print_help()

@@ -310,3 +310,45 @@ class Runner(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class DraftRefine(unittest.TestCase):
+    """tools/arctic-batch/draft_refine.py with the fake engine and fake judge: drafts carry draft flags, only keepers are refined,
+    refine output is hash-equal to a plain batch of the same pictures."""
+    def test_funnel(self):
+        import draft_refine as dr
+        t = tempfile.TemporaryDirectory(); d = t.name
+        os.environ["FAKE_GEN_S"] = "0.3"; os.environ["FAKE_POST_S"] = "0.1"
+        imgs = tb.make_imgs(os.makedirs(os.path.join(d, "i")) or os.path.join(d, "i"), ["c1", "c2", "c3", "v1", "v2"])
+        man = os.path.join(d, "props.json")
+        json.dump({"chest": [os.path.join(imgs, "c1.png"), os.path.join(imgs, "c2.png"), os.path.join(imgs, "c3.png")],
+                   "veto": [os.path.join(imgs, "v1.png"), os.path.join(imgs, "v2.png")]}, open(man, "w"))
+        seed = os.path.join(d, "seed"); os.makedirs(seed)
+        os.replace(os.path.join(imgs, "c1.png"), os.path.join(seed, "seedimg.png"))
+        import shutil; shutil.copy(os.path.join(seed, "seedimg.png"), os.path.join(imgs, "c1.png"))
+        q, out = os.path.join(d, "q"), os.path.join(d, "out")
+        res = {}
+        th = threading.Thread(target=lambda: res.setdefault("rc", tb.run(seed, out, "--gen-lanes", "2", "--lane2-speed", "1.0",
+                                                                         "--min-gain-s", "0", "--queue-dir", q, "--res", "1024")))
+        th.start(); time.sleep(0.3)
+        judge = "%s %s {glb}" % (sys.executable, os.path.join(HERE, "fake_judge.py"))
+        args = type("A", (), dict(queue_dir=q, out=out, manifest=man, judge_cmd=judge, keep=1, draft_res=None, draft_cli_extra=None,
+                                  draft_est_s=1, draft_vram_gb=None, refine_est_s=1, draft_timeout=60, close=True))
+        rep = dr.run(args, log=lambda m: None)
+        th.join(120); self.assertFalse(th.is_alive()); self.assertEqual(res["rc"], 0)
+        self.assertEqual(rep["props"]["chest"]["keepers"], ["chest_3"])         # highest score, one keeper
+        self.assertEqual(rep["props"]["veto"]["keepers"], [])                    # the judge vetoed both drafts
+        names = {r["asset"] for r in tb.rows(out)[:-1]}
+        self.assertEqual(names, {"seedimg", "chest_1_d", "chest_2_d", "chest_3_d", "veto_1_d", "veto_2_d", "chest_3"})
+        def gen_argv(n):
+            for l in open(os.path.join(out, "logs", n + ".gen.log"), errors="replace"):
+                if l.startswith("ARGS "): return json.loads(l[5:])["argv"]
+        dv, rv = gen_argv("chest_3_d"), gen_argv("chest_3")
+        self.assertEqual(dv[dv.index("--res") + 1], "512"); self.assertIn("--steps-ss", dv)
+        self.assertEqual(rv[rv.index("--res") + 1], "1024"); self.assertNotIn("--steps-ss", rv)
+        # refine == plain run of the same picture
+        plain_in = os.path.join(d, "plain"); os.makedirs(plain_in); shutil.copy(os.path.join(imgs, "c3.png"), os.path.join(plain_in, "chest_3.png"))
+        plain = os.path.join(d, "plain_out")
+        self.assertEqual(tb.run(plain_in, plain, "--res", "1024"), 0)
+        self.assertEqual(tb.ab.masked_glb_hash(os.path.join(out, "chest_3.glb")), tb.ab.masked_glb_hash(os.path.join(plain, "chest_3.glb")))
+        t.cleanup()

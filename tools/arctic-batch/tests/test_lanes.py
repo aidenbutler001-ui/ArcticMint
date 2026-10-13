@@ -321,7 +321,7 @@ class DraftRefine(unittest.TestCase):
         os.environ["FAKE_GEN_S"] = "0.3"; os.environ["FAKE_POST_S"] = "0.1"
         imgs = tb.make_imgs(os.makedirs(os.path.join(d, "i")) or os.path.join(d, "i"), ["c1", "c2", "c3", "v1", "v2"])
         man = os.path.join(d, "props.json")
-        json.dump({"chest": [os.path.join(imgs, "c1.png"), os.path.join(imgs, "c2.png"), os.path.join(imgs, "c3.png")],
+        json.dump({"chest": [os.path.join(imgs, "c1.png"), os.path.join(imgs, "c2.png"), {"image": os.path.join(imgs, "c3.png"), "seed": 5}],
                    "veto": [os.path.join(imgs, "v1.png"), os.path.join(imgs, "v2.png")]}, open(man, "w"))
         seed = os.path.join(d, "seed"); os.makedirs(seed)
         os.replace(os.path.join(imgs, "c1.png"), os.path.join(seed, "seedimg.png"))
@@ -333,7 +333,7 @@ class DraftRefine(unittest.TestCase):
         th.start(); time.sleep(0.3)
         judge = "%s %s {glb}" % (sys.executable, os.path.join(HERE, "fake_judge.py"))
         args = type("A", (), dict(queue_dir=q, out=out, manifest=man, judge_cmd=judge, keep=1, draft_res=None, draft_cli_extra=None,
-                                  draft_est_s=1, draft_vram_gb=None, refine_est_s=1, draft_timeout=60, close=True))
+                                  draft_est_s=1, draft_vram_gb=None, refine_est_s=1, draft_timeout=60, close=True, plain=False))
         rep = dr.run(args, log=lambda m: None)
         th.join(120); self.assertFalse(th.is_alive()); self.assertEqual(res["rc"], 0)
         self.assertEqual(rep["props"]["chest"]["keepers"], ["chest_3"])         # highest score, one keeper
@@ -346,9 +346,45 @@ class DraftRefine(unittest.TestCase):
         dv, rv = gen_argv("chest_3_d"), gen_argv("chest_3")
         self.assertEqual(dv[dv.index("--res") + 1], "512"); self.assertIn("--steps-ss", dv)
         self.assertEqual(rv[rv.index("--res") + 1], "1024"); self.assertNotIn("--steps-ss", rv)
+        self.assertEqual((dv[dv.index("--seed") + 1], rv[rv.index("--seed") + 1]), ("5", "5"))   # the candidate's own seed, draft and refine
         # refine == plain run of the same picture
         plain_in = os.path.join(d, "plain"); os.makedirs(plain_in); shutil.copy(os.path.join(imgs, "c3.png"), os.path.join(plain_in, "chest_3.png"))
         plain = os.path.join(d, "plain_out")
-        self.assertEqual(tb.run(plain_in, plain, "--res", "1024"), 0)
+        self.assertEqual(tb.run(plain_in, plain, "--res", "1024", "--seed", "5"), 0)
         self.assertEqual(tb.ab.masked_glb_hash(os.path.join(out, "chest_3.glb")), tb.ab.masked_glb_hash(os.path.join(plain, "chest_3.glb")))
+        t.cleanup()
+
+    def test_plain_arm_submits_everything_as_full_jobs(self):
+        import draft_refine as dr
+        t = tempfile.TemporaryDirectory(); d = t.name
+        imgs = tb.make_imgs(os.makedirs(os.path.join(d, "i")) or os.path.join(d, "i"), ["a", "b"])
+        man = os.path.join(d, "props.json")
+        json.dump({"p": [os.path.join(imgs, "a.png"), {"image": os.path.join(imgs, "b.png"), "seed": 3}]}, open(man, "w"))
+        q = os.path.join(d, "q")
+        args = type("A", (), dict(queue_dir=q, out=os.path.join(d, "o"), manifest=man, judge_cmd="", keep=1, draft_res=None,
+                                  draft_cli_extra=None, draft_est_s=1, draft_vram_gb=None, refine_est_s=1, draft_timeout=1, close=True, plain=True))
+        rep = dr.run(args, log=lambda m: None)
+        self.assertEqual(rep["props"]["p"]["keepers"], ["p_1", "p_2"])
+        got = {g["name"]: g for g in __import__("live_queue").LiveQueue(q, lambda m: None).poll([])}
+        self.assertEqual(sorted(got), ["p_1", "p_2"]); self.assertEqual(got["p_2"]["opts"], {"seed": 3}); self.assertEqual(got["p_1"]["opts"], {})
+        t.cleanup()
+
+
+class SizeJudge(unittest.TestCase):
+    def _glb(self, path, mn, mx):
+        js = json.dumps({"asset": {"version": "2.0"}, "meshes": [{"primitives": [{"attributes": {"POSITION": 0}}]}],
+                         "accessors": [{"min": mn, "max": mx}]}).encode()
+        js += b" " * (-len(js) % 4)
+        import struct
+        open(path, "wb").write(b"glTF" + struct.pack("<II", 12 + 8 + len(js), 2) + struct.pack("<II", len(js), 0x4E4F534A) + js)
+
+    def test_score_and_veto(self):
+        import size_judge as sj, contextlib, io
+        t = tempfile.TemporaryDirectory(); g = os.path.join(t.name, "a.glb")
+        self._glb(g, [0, 0, 0], [1.3, 0.85, 0.8])                        # chest, axes in another order
+        self.assertAlmostEqual(sj.deviation(sj.glb_bounds(g), [1.3, 0.8, 0.85]), 0.0, places=6)
+        self._glb(g, [0, 0, 0], [1.3, 0.4, 0.85])                        # half as deep
+        with contextlib.redirect_stdout(io.StringIO()) as o:
+            rc = sj.main([g, "--spec", "1.3,0.8,0.85"])
+        self.assertEqual(rc, 4); self.assertNotIn("-0", o.getvalue().splitlines()[-1][:2])
         t.cleanup()

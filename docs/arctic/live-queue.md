@@ -27,13 +27,47 @@ python arctic_batch.py close  --queue-dir Q
   plain batch and as a live batch (three submitted mid-run, one urgent) give hash-equal GLBs (`cmd_compare`).
 - GPU locks are unchanged (both cards are reserved and locked for the whole live session). The post/finish pipeline is untouched.
 
-## Phase 2 (not built): the Space Gothic slot
-Aim: between jobs, lane B (or A) is handed to Space Gothic instead of being held for the whole session (item 13 estimate: ~200 s per
-boundary). Needs SG's agreement on how they ask (nothing in `gpulock.py` today), so no code yet. Proposal for the SG lead: a
-`gpu<N>.wanted` file (JSON owner, what, until) in the lock directory, same rules as `.reserved`. When a lane finishes a job and a `.wanted`
-for its card exists, and that card's post/finish work is idle (VramGate shows nothing running), the runner unreserves and releases that
-card, waits until SG's lock is gone, then reserves and acquires again and carries on. No preemption, and SG waits at most one job.
-Open question for the lead: lane B's card is also the post/finish card, so yielding it also pauses post/finish; is that acceptable?
+## Phase 2 (design only, not built): the Space Gothic slot
+Aim: at a job boundary a card is handed to Space Gothic (SG) instead of being held for the whole session (~200 s per boundary, item 13).
+Nothing here replaces Aiden's rule: SG still needs his OK in their project before they run anything. The slot is only the *mechanism* by
+which a run that is already approved gets the card without a human stopping our batch. Status: waiting for Aiden's answer in SG's project.
+
+**Why not a plain `reserve` by SG.** `gpulock.reserve()` refuses a lower-or-equal priority owner while another owner's reservation is
+active (`pri <= existing`), and arctic-batch always holds one (`--lock-hours`, default 3; priority 100 vs SG's 50). So SG's `reserve` would
+be refused for the whole session, and even if it were stored it would only block lower priorities, which does not reach us. The request
+needs its own file.
+
+**Answer 1: what the call looks like.** A new verb in both tools, same directory and JSON style as the rest:
+```
+python tools\gpulock.py want   --gpu 0 --owner space-gothic --minutes 40 --what "ray-tracing measurement"   # writes gpu0.wanted
+python tools\gpulock.py unwant --gpu 0 --owner space-gothic                                                   # deletes it
+tools\gpulock.ps1 want -Gpu 0 -Owner space-gothic -Minutes 40 -What "..."       # same in PowerShell (SG's side)
+```
+`gpu<N>.wanted` = JSON `{owner, what, until_utc, priority}`. `until_utc` caps how long the runner will look ahead (default 40 min, max 120).
+After `want`, SG polls `status`, `acquire --wait` as today; the lock itself is still taken with `gpulock run` for the child's lifetime, so a
+crash frees it. `unwant` is optional: the file also expires at `until_utc` and is deleted by the runner after SG's lock has come and gone.
+
+**What the runner does** (at a job boundary of the lane on that card, never mid-job; priority 100 does not override this):
+1. See `gpu<N>.wanted` from another owner (or an active reservation of another owner on its card).
+2. Stop starting jobs on that lane. Wait until nothing of ours runs on that card (VramGate empty: the lane's generation, and post/finish
+   when it is the post card, i.e. lane B's 3060 Ti), at most one job + one post/finish (~4-6 min worst case, so SG waits that long at most).
+3. `unreserve` and `release` that card's lock (we hold it as our own pid), then wait for SG's lock to appear and go.
+4. When the lock is free and the `.wanted` file is gone or expired: `reserve` + `acquire` again, resume. The other lane keeps working
+   meanwhile (a batch with one card runs at one-lane speed; the other card's post/finish is unchanged).
+If SG's lock is still held after `until_utc`, we keep waiting: **no preemption in either direction**, as today.
+
+**Answer 2: both projects want the same card.**
+- `want` is first come, first served per card. A second `want` from another owner is refused (exit 3) and prints who holds the slot
+  and until when; the same owner may renew. The runner never writes `.wanted` for itself (it already has the card).
+- Reservations keep today's rules unchanged (priority 100 vs 50): if SG reserves a card while we hold no reservation (a batch run with
+  `--lock-hours 0`), the runner treats that active foreign reservation exactly like a `.wanted` and yields at the next boundary.
+- If SG `want`s a card while our lock is held by a *non*-slot-aware process (a single `gpulock run`, e.g. a PC sheet), nothing changes:
+  they wait for that lock like any other.
+- A stale `.wanted` (expired) is ignored and removed by whoever sees it first, like a stale lock.
+
+**Small code change when built:** `want`/`unwant` in gpulock.py and gpulock.ps1 (+ tests in test_gpulock), `status` prints the
+`wanted:` line, the runner learns `yield_card()` (about 60 lines in `run_lanes`, tested with the fake gpulock and fake engine: yield at the
+boundary, resume after, output hash-equal).
 
 ## PC test plan (needed before it is a default)
 One run on the PC after SG's window: two small props from the command line, a third submitted mid-run at priority 100, `close`; check

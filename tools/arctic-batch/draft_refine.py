@@ -21,7 +21,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 import live_queue
 
-DRAFT_OPTS = {"res": 512, "faces": 150000, "cli_extra": "--steps 12 --steps-ss 24"}
+DRAFT_OPTS = {"res": 512, "faces": 150000, "cli_extra": "--steps 12 --steps-ss 24", "skip_finish": True}
 
 
 def load_manifest(path):

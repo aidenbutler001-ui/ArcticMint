@@ -329,7 +329,8 @@ class DraftRefine(unittest.TestCase):
         q, out = os.path.join(d, "q"), os.path.join(d, "out")
         res = {}
         th = threading.Thread(target=lambda: res.setdefault("rc", tb.run(seed, out, "--gen-lanes", "2", "--lane2-speed", "1.0",
-                                                                         "--min-gain-s", "0", "--queue-dir", q, "--res", "1024")))
+                                                                         "--min-gain-s", "0", "--queue-dir", q, "--res", "1024",
+                                                                         "--finish-cmd", "%s %s {glb} {name} {out}" % (sys.executable, os.path.join(HERE, "fake_engine.py") + " finish"))))
         th.start(); time.sleep(0.3)
         judge = "%s %s {glb}" % (sys.executable, os.path.join(HERE, "fake_judge.py"))
         args = type("A", (), dict(queue_dir=q, out=out, manifest=man, judge_cmd=judge, keep=1, draft_res=None, draft_cli_extra=None,
@@ -340,6 +341,8 @@ class DraftRefine(unittest.TestCase):
         self.assertEqual(rep["props"]["veto"]["keepers"], [])                    # the judge vetoed both drafts
         names = {r["asset"] for r in tb.rows(out)[:-1]}
         self.assertEqual(names, {"seedimg", "chest_1_d", "chest_2_d", "chest_3_d", "veto_1_d", "veto_2_d", "chest_3"})
+        fin = sorted(os.listdir(os.path.join(out, "finished")))
+        self.assertEqual(fin, ["chest_3", "seedimg"])                           # drafts are never finished
         def gen_argv(n):
             for l in open(os.path.join(out, "logs", n + ".gen.log"), errors="replace"):
                 if l.startswith("ARGS "): return json.loads(l[5:])["argv"]

@@ -3,7 +3,7 @@
 person, a script, another Claude session) can add a job while a batch runs, and nothing needs a socket or a service.
 
   python arctic_batch.py submit --queue-dir Q --image path.png [--priority 100] [--est-s 600] [--vram-gb 4.5] [--pin A|B] [--name N]
-                                    [--job-res N] [--job-seed N] [--job-faces N] [--job-cli-extra "..."]   (per-job overrides: a 512 draft)
+                                    [--job-res N] [--job-seed N] [--job-faces N] [--job-skip-finish] [--job-cli-extra "..."]   (per-job overrides: a 512 draft)
   python arctic_batch.py close  --queue-dir Q          (no more jobs: the runner finishes what is queued and exits)
 
 Layout:  Q/<time>-<name>.job.json  new job (written as .tmp then renamed, so the runner never reads half a file)
@@ -25,7 +25,7 @@ def _write_atomic(path, text):
     os.replace(tmp, path)
 
 
-OPT_KEYS = ("res", "seed", "faces", "cli_extra")
+OPT_KEYS = ("res", "seed", "faces", "cli_extra", "skip_finish")
 
 
 def _clean_opts(opts):
@@ -37,7 +37,10 @@ def _clean_opts(opts):
             continue
         if k not in OPT_KEYS:
             raise ValueError("unknown job option %r (allowed: %s)" % (k, ", ".join(OPT_KEYS)))
-        if k == "cli_extra":
+        if k == "skip_finish":
+            if v:
+                out[k] = True
+        elif k == "cli_extra":
             if not isinstance(v, str):
                 raise ValueError("cli_extra must be a string")
             out[k] = v

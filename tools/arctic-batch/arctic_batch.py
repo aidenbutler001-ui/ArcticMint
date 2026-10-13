@@ -172,6 +172,10 @@ class Batch:
             cmd += ["--dump-post", dump]
         return cmd + split_cmd(a.cli_extra) + split_cmd(o.get("cli_extra", ""))
 
+    def wants_finish(self, name):
+        """--finish-cmd applies to every job except one submitted with skip_finish (a draft: only its GLB is judged)."""
+        return bool(self.finish) and not getattr(self, "job_opts", {}).get(name, {}).get("skip_finish")
+
     def post_cmd(self, dump, glb, name=None):
         a = self.a
         o = getattr(self, "job_opts", {}).get(name, {})
@@ -445,7 +449,7 @@ class Batch:
                     return
                 try:
                     glb = self.do_post(job[0], job[1], threads)
-                    if glb and self.finish:
+                    if glb and self.wants_finish(job[0]):
                         fq.put((job[0], glb))
                 except BaseException as e:
                     self.rows[job[0]].update(status="post_failed", error=repr(e))
@@ -540,7 +544,7 @@ class Batch:
             dump = self.do_gen(img, name)
             if dump:
                 glb = self.do_post(name, dump, self.a.total_threads)
-                if glb and self.finish:
+                if glb and self.wants_finish(name):
                     self.rows[name]["t_post_end"] = time.time()
                     self.do_finish(name, glb)
 
@@ -556,7 +560,7 @@ class Batch:
                     return
                 try:
                     glb = self.do_post(job[0], job[1], threads)
-                    if glb and self.finish:
+                    if glb and self.wants_finish(job[0]):
                         fq.put((job[0], glb))
                 except BaseException as e:  # keep the pool alive; never leave a row without a status
                     self.rows[job[0]].update(status="post_failed", error=repr(e))
@@ -924,6 +928,7 @@ def build_parser():
     sb.add_argument("--pin", choices=["A", "B"], default=None)
     sb.add_argument("--job-res", type=int, default=None, help="this job only: --res (a draft is 512)")
     sb.add_argument("--job-seed", type=int, default=None); sb.add_argument("--job-faces", type=int, default=None)
+    sb.add_argument("--job-skip-finish", action="store_true", help="this job only: no --finish-cmd (a draft)")
     sb.add_argument("--job-cli-extra", default=None, help="this job only: extra trellis-cli args, appended after the batch's --cli-extra")
     cl = sub.add_parser("close", help="no more jobs for the live queue: the batch finishes what is queued and exits")
     cl.add_argument("--queue-dir", required=True)
@@ -947,7 +952,7 @@ def main(argv=None):
             print("closed " + a.queue_dir)
         else:
             print(live_queue.submit(a.queue_dir, a.image, a.name, a.priority, a.est_s, a.vram_gb, a.pin,
-                                    opts={"res": a.job_res, "seed": a.job_seed, "faces": a.job_faces, "cli_extra": a.job_cli_extra}))
+                                    opts={"res": a.job_res, "seed": a.job_seed, "faces": a.job_faces, "cli_extra": a.job_cli_extra, "skip_finish": a.job_skip_finish or None}))
         return 0
     if a.cmd != "run":
         build_parser().print_help()

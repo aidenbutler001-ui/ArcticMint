@@ -128,6 +128,21 @@ class Runner(unittest.TestCase):
         # same output whichever lane generated it (the fake engine is deterministic)
         self.assertEqual(tb.ab.cmd_compare(type("A", (), {"dir_a": one, "dir_b": two})), 0)
 
+    def test_lane2_env_set_and_unset_only_on_lane_b(self):
+        os.environ["TRELLIS_CONVNEXT_STREAM_ALL"] = "1"
+        try:
+            out = os.path.join(self.d, "env")
+            self.assertEqual(self.lanes_run(out, "--lane2-unset", "TRELLIS_CONVNEXT_STREAM_ALL", "--lane2-env", "X_TEST=1"), 0)
+            seen = {x["asset"]: x["gen_lane"] for x in tb.rows(out)[:-1]}
+            self.assertEqual(set(seen.values()), {"A", "B"})
+            for n, ln in seen.items():   # the fake prints only its ENV_KEYS; the cmd line proves the lane
+                env = tb.gen_args(out, n)["env"]
+                self.assertEqual(env["CUDA_VISIBLE_DEVICES"], "0" if ln == "B" else None)
+                self.assertEqual(env["TRELLIS_CONVNEXT_STREAM_ALL"], None if ln == "B" else "1")
+                self.assertEqual(env["X_TEST"], "1" if ln == "B" else None)
+        finally:
+            os.environ.pop("TRELLIS_CONVNEXT_STREAM_ALL", None)
+
     def test_default_is_unchanged(self):
         out = os.path.join(self.d, "o"); self.assertEqual(tb.run(self.imgs, out), 0)
         self.assertEqual({x["gen_lane"] for x in tb.rows(out)[:-1]}, {""})

@@ -100,8 +100,9 @@ the go/no-go rule: Expiramental3d `research/notes/gen-lane2-design.md`.
 python arctic_batch.py run <images...> -o out --gen-lanes 2 --est-from <earlier batch.csv> --dump-mode raw --hash --gpulock ...
 ```
 
-- Lane B runs with `CUDA_VISIBLE_DEVICES=<lane2-gpu>` and `--gpu 0` (the 4070 is hidden). `--lane2-env KEY=VAL` adds env for
-  lane B only (e.g. `TRELLIS_CONVNEXT_STREAM_ALL=0` to test streaming off on the 3060 Ti, which has no desktop).
+- Lane B runs with `CUDA_VISIBLE_DEVICES=<lane2-gpu>` and `--gpu 0` (the 4070 is hidden). `--lane2-env KEY=VAL` adds and
+  `--lane2-unset KEY` removes env for lane B only. Streaming off on the 3060 Ti (no desktop) is `--lane2-unset TRELLIS_CONVNEXT_STREAM_ALL`
+  (the engine tests presence, so `=0` does NOT turn it off), plus `--lane2-env TRELLIS_CONVNEXT_STREAM_GB=6` to raise the 2 GB auto-stream threshold.
 - Lane B takes a job only when it lowers the projected makespan by `--min-gain-s` (a big job is never left for the slow lane at
   the tail). `--est-from batch.csv` gives job sizes from an earlier run; without it sizes are unknown and the queue is split.
   The lane's speed is learned from its first finished job (`--lane2-speed` is the starting belief).

@@ -10,7 +10,8 @@ import hashlib, os, sys, time, json
 mode, args = sys.argv[1], sys.argv[2:]
 GEN, POST = float(os.environ.get("FAKE_GEN_S", "0.4")), float(os.environ.get("FAKE_POST_S", "0.4"))
 ENV_KEYS = ("CUDA_VISIBLE_DEVICES", "TRELLIS_POST_THREADS", "CUDA_DEVICE_ORDER", "TRELLIS_POST_HASH",
-            "TRELLIS_DUMP_POST", "TRELLIS_STOP_AFTER_POST_DUMP", "TRELLIS_REMESH_MEM_GIB", "ARCTIC_GPU_PHASE_LOCK")
+            "TRELLIS_DUMP_POST", "TRELLIS_STOP_AFTER_POST_DUMP", "TRELLIS_REMESH_MEM_GIB", "ARCTIC_GPU_PHASE_LOCK",
+            "TRELLIS_CONVNEXT_STREAM_ALL", "X_TEST")
 
 
 def hash_line(stage, body):

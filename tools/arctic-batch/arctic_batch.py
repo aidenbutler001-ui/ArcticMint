@@ -118,6 +118,8 @@ class Batch:
             for kv in self.a.lane2_env:
                 k, _, v = kv.partition("=")
                 e[k] = v
+            for k in self.a.lane2_unset:   # TRELLIS_CONVNEXT_STREAM_ALL is tested for presence (getenv != nullptr): "=0" does not turn it off
+                e.pop(k, None)
         if self.a.hash:
             e["TRELLIS_POST_HASH"] = "1"
         if self.a.dump_mode == "raw":
@@ -834,7 +836,10 @@ def build_parser():
     g.add_argument("--lane2-gpu", type=int, default=0, help="PCI index of lane B; must equal --post-gpu (one GPU lock set)")
     g.add_argument("--lane2-speed", type=float, default=0.5, help="starting belief: lane B speed relative to lane A (learned from the first job)")
     g.add_argument("--lane2-env", action="append", default=[], metavar="KEY=VAL",
-                   help="extra environment for lane B generations only, e.g. TRELLIS_CONVNEXT_STREAM_ALL=0 (streaming off)")
+                   help="extra environment for lane B generations only, e.g. TRELLIS_CONVNEXT_STREAM_GB=6")
+    g.add_argument("--lane2-unset", action="append", default=[], metavar="KEY",
+                   help="remove KEY from lane B's environment (streaming off = unset TRELLIS_CONVNEXT_STREAM_ALL; stages >= "
+                        "TRELLIS_CONVNEXT_STREAM_GB, default 2 GB, still stream)")
     g.add_argument("--est-from", default="", metavar="batch.csv",
                    help="gen_s per asset from an earlier batch.csv on lane A: the dispatcher's job-size estimates")
     g.add_argument("--job-vram", action="append", default=[], metavar="NAME=GB", help="VRAM one generation needs (default --gen-need-gb)")

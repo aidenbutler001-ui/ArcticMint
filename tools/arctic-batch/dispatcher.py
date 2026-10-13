@@ -107,10 +107,30 @@ class VramGate:
         self.cap, self.base, self.margin = dict(cap_gb), dict(baseline_gb or {}), margin_gb
         self.running = {g: {} for g in self.cap}   # gpu -> {key: need_gb}
         self.shared = {}
+        self.blocked = set()   # cards handed to another owner (slot yield): nothing is admitted until unblock()
         self.cond = threading.Condition()
 
     def _free(self, gpu):
+        if gpu in self.blocked:
+            return -1e9
         return self.cap[gpu] - self.base.get(gpu, 0.0) - self.margin - sum(self.running[gpu].values())
+
+    def block(self, gpu):
+        with self.cond:
+            self.blocked.add(gpu)
+
+    def unblock(self, gpu):
+        with self.cond:
+            self.blocked.discard(gpu)
+            self.cond.notify_all()
+
+    def is_blocked(self, gpu):
+        return gpu in self.blocked
+
+    def idle(self, gpu):
+        """Nothing of ours holds a reservation on this card (no generation, post, finish)."""
+        with self.cond:
+            return not self.running[gpu]
 
     def can_admit(self, gpu, need):
         with self.cond:

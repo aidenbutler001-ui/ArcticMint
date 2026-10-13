@@ -106,6 +106,7 @@ class Batch:
         self.stop = threading.Event()
         self.aborted = None
         self.finish = split_cmd(a.finish_cmd) if a.finish_cmd else None
+        self.locks = None           # GpuLocks, set by cmd_run (slot yield)
         self.gate = None            # dispatcher.VramGate, set by run_lanes (--gen-lanes 2)
         self.lane_b_busy = 0
 
@@ -385,7 +386,7 @@ class Batch:
                     row["phase_gpu"] = g
                     row["gate_wait_s"] = row.get("gate_wait_s", 0.0) + time.time() - t0
                     return g
-            if time.time() - t0 > self.a.gate_timeout:
+            if time.time() - t0 > self.a.gate_timeout and not any(self.gate.is_blocked(g) for g in cands):   # a card handed to another owner is not a wrong estimate
                 row["_warn"].add(kind + ":gate_timeout")
                 self.log("%s: %s waited %.0fs for VRAM on GPU %s; starting anyway" % (name, kind, time.time() - t0, cands))
                 row["phase_gpu"] = self.a.post_gpu
@@ -429,6 +430,46 @@ class Batch:
         cond = threading.Condition()
         npost, threads = a.post_workers, max(1, a.total_threads // a.post_workers)
         retried = set()
+        paused, held = set(), {}   # cards waiting for a job boundary / handed to another owner
+        cards = {a.gen_gpu: la, a.lane2_gpu: lb}
+        slot_stop = threading.Event()
+
+        def slot_loop():   # --slot-yield: see docs/arctic/live-queue.md, Phase 2
+            locks = self.locks
+            while not slot_stop.is_set():
+                with cond:
+                    for g, lane in cards.items():
+                        try:
+                            st = held.get(g)
+                            if st is None:
+                                d = locks.demand(g)
+                                if d and g not in paused:
+                                    paused.add(g); self.gate.block(g)
+                                    self.log("slot: GPU %d wanted by %s (%s); yielding at the next job boundary" % (g, d["owner"], d.get("what") or d["kind"]))
+                                elif not d and g in paused:
+                                    paused.discard(g); self.gate.unblock(g)
+                                    self.log("slot: request for GPU %d is gone; carrying on" % g)
+                                if g in paused and lane.job is None and self.gate.idle(g):
+                                    locks.yield_card(g)
+                                    held[g] = {"owner": d["owner"], "kind": d["kind"], "t0": time.time(), "seen": False}
+                                    self.log("slot: GPU %d released to %s" % (g, d["owner"]))
+                            else:
+                                holder = locks.lock_holder(g)
+                                if holder and holder.lower() == st["owner"].lower():   # only the wanter's own run serves the request
+                                    if not st["seen"]:
+                                        self.log("slot: %s holds GPU %d" % (holder, g))
+                                    st["seen"] = True
+                                d = locks.demand(g)
+                                if holder is None and st["seen"] and d and d["kind"] == "want":
+                                    locks.mod.unwant(g, d["owner"])   # their run came and went: the request is served
+                                    d = locks.demand(g)
+                                if holder is None and d is None and locks.retake_card(g):
+                                    del held[g]; paused.discard(g); self.gate.unblock(g)
+                                    self.log("slot: GPU %d back after %.0fs" % (g, time.time() - st["t0"]))
+                        except Exception as e:   # never let the monitor kill the batch
+                            self.log("slot: error on GPU %d: %r" % (g, e))
+                    cond.notify_all()
+                slot_stop.wait(a.slot_poll_s)
 
         def ingest():   # under cond: take the new files of the live queue (OPT-IN: --queue-dir)
             if live is None:
@@ -473,6 +514,9 @@ class Batch:
                         if self.stop.is_set():
                             return
                         ingest()
+                        if lane.gpu in paused and pend:   # a card is wanted by another owner: no new job starts on it
+                            cond.wait(1.0)
+                            continue
                         j = disp.choose(time.time(), lane, pend)
                         if j is not None:
                             pend.remove(j)
@@ -512,7 +556,8 @@ class Batch:
         ws = [threading.Thread(target=pworker, daemon=True) for _ in range(npost)]
         fs = [threading.Thread(target=fworker, daemon=True) for _ in range(a.finish_workers if self.finish else 0)]
         ls = [threading.Thread(target=lane_worker, args=(l,), daemon=True) for l in (la, lb)]
-        for w in ws + fs + ls:
+        sm = threading.Thread(target=slot_loop, daemon=True) if a.slot_yield else None
+        for w in ws + fs + ls + ([sm] if sm else []):
             w.start()
         try:
             for w in ls:
@@ -535,6 +580,8 @@ class Batch:
                 fq.put(None)
             for w in fs:
                 w.join()
+            if sm:
+                slot_stop.set(); sm.join(10)
 
     # -- drivers --------------------------------------------------------------
     def run_serial(self, items):
@@ -718,6 +765,44 @@ class GpuLocks:
         print("arctic-batch: cannot lock the GPUs: %s" % msg, file=sys.stderr)
         raise SystemExit(3)
 
+    # -- the Space Gothic slot (--slot-yield; design: docs/arctic/live-queue.md) ----------------------------------------
+    def demand(self, g):
+        """Another owner's active `want` (or reservation) on card g, or None. Needs gpulock.foreign_demand."""
+        return self.mod.foreign_demand(g, self.a.lock_owner)
+
+    def yield_card(self, g):
+        """Hand card g over: unreserve and release it (we hold it under our own pid)."""
+        owner = self.a.lock_owner
+        if g in self.taken:
+            self.mod.release(g, owner, os.getpid())
+            self.taken.remove(g)
+        if g in self.reserved:
+            self.mod.unreserve(g, owner)
+            self.reserved.remove(g)
+
+    def retake_card(self, g):
+        """Reserve and acquire card g again, without waiting; False (nothing held) when the other owner got there first."""
+        a, owner = self.a, self.a.lock_owner
+        quiet = lambda *x: None
+        reserved = False
+        if a.lock_hours > 0:
+            ok, _ = self.mod.reserve(g, owner, a.lock_hours, "arctic-batch " + a.out)
+            if not ok:
+                return False
+            reserved = True
+        if not self.mod.acquire(g, owner, "arctic-batch " + a.out, wait=0, log=quiet):
+            if reserved:
+                self.mod.unreserve(g, owner)
+            return False
+        self.taken.append(g)
+        if reserved:
+            self.reserved.append(g)
+        return True
+
+    def lock_holder(self, g):
+        i = self.mod.read_json(self.mod.lock_path(g))
+        return str(i.get("owner", "")) if i else None
+
     def __exit__(self, *exc):
         for g in self.taken:
             self.mod.release(g, self.a.lock_owner, os.getpid())
@@ -795,6 +880,9 @@ def cmd_run(a):
             os.makedirs(os.path.dirname(os.path.abspath(a.phase_lock)), exist_ok=True)
         used = preflight(a) if a.preflight else None
         b = Batch(a)
+        b.locks = locks
+        if a.slot_yield and not hasattr(locks.mod, "foreign_demand"):
+            raise SystemExit("--slot-yield: %s has no foreign_demand (needs the gpulock with want/unwant, Expiramental3d PR #19)" % a.gpulock)
         t0 = time.time()
         todo = longest_first(items, load_est(a.est_from)) if a.order == "longest-first" else items
         if todo is not items:
@@ -899,6 +987,10 @@ def build_parser():
     g.add_argument("--est-from", default="", metavar="batch.csv",
                    help="gen_s per asset from an earlier batch.csv on lane A: the dispatcher's job-size estimates "
                         "(also the sizes for --order longest-first)")
+    g.add_argument("--slot-yield", action="store_true",
+                   help="OPT-IN (needs --gen-lanes 2 and --gpulock): when another owner `want`s a card (gpulock want) or reserves it, "
+                        "finish the job running on it, hand the card over, take it back after their run; no preemption")
+    g.add_argument("--slot-poll-s", type=float, default=2.0, help=argparse.SUPPRESS)
     g.add_argument("--queue-dir", default="", metavar="DIR",
                    help="OPT-IN live queue (needs --gen-lanes 2): jobs added to DIR while the batch runs (`submit`), a priority per "
                         "job, ends on `close` (live_queue.py). Images on the command line are optional with it")
@@ -957,6 +1049,8 @@ def main(argv=None):
     if a.cmd != "run":
         build_parser().print_help()
         return 2
+    if a.slot_yield and (a.gen_lanes != 2 or not a.gpulock or a.gpulock_assume_held):
+        raise SystemExit("--slot-yield needs --gen-lanes 2 and --gpulock, and not --gpulock-assume-held (the runner must hold the locks itself)")
     if a.queue_dir and a.gen_lanes != 2:
         raise SystemExit("--queue-dir needs --gen-lanes 2")
     if not a.images and not a.queue_dir:

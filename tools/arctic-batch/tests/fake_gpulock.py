@@ -51,3 +51,43 @@ def unreserve(gpu, owner):
     if res_path(gpu).exists():
         res_path(gpu).unlink()
     return True
+
+
+# -- the Space Gothic slot (gpulock want / unwant / foreign_demand), same shape as the real module -----------------------
+import time as _time
+
+
+def want_path(g): return lock_dir() / ("gpu%d.wanted" % g)
+
+
+def active_want(g):
+    w = read_json(want_path(g))
+    return w if w and w.get("until", 0) > _time.time() else None
+
+
+def want(gpu, owner, minutes=40, what=""):
+    cur = active_want(gpu)
+    if cur and cur["owner"] != owner:
+        return False, "GPU %d is already wanted by %s" % (gpu, cur["owner"])
+    d = {"owner": owner, "what": what, "until": _time.time() + minutes * 60}
+    want_path(gpu).write_text(json.dumps(d))
+    return True, d
+
+
+def unwant(gpu, owner):
+    w = read_json(want_path(gpu))
+    if w and w["owner"] != owner:
+        return False
+    if want_path(gpu).exists():
+        want_path(gpu).unlink()
+    return True
+
+
+def foreign_demand(gpu, owner):
+    w = active_want(gpu)
+    if w and w["owner"] != owner:
+        return {"kind": "want", "owner": w["owner"], "what": w.get("what", ""), "until_utc": ""}
+    r = read_json(res_path(gpu))
+    if r and r["owner"] != owner:
+        return {"kind": "reservation", "owner": r["owner"], "what": "", "until_utc": ""}
+    return None

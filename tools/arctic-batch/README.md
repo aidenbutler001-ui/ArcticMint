@@ -101,6 +101,11 @@ Only the start order changes: `batch.csv` rows keep the given order and each pro
 Add jobs while a batch runs: `arctic_batch.py submit --queue-dir Q --image X.png --priority 100`, end with `close` (or `--idle-exit S`).
 Priority decides who starts next, never interrupts a running generation. Design, status and the Space Gothic slot: `docs/arctic/live-queue.md`.
 
+## Card slot for Space Gothic (`--slot-yield`, opt-in, needs `--gen-lanes 2` and `--gpulock`)
+
+When another owner runs `gpulock want --gpu N` (or reserves the card), the runner finishes the job on card N, releases it, and takes it back
+after their run. No preemption. Design and rules: `docs/arctic/live-queue.md` (Phase 2).
+
 ## Second generation lane (`--gen-lanes 2`, opt-in)
 
 Default `--gen-lanes 1` changes nothing. With `2`, the 3060 Ti (`--lane2-gpu`, must equal `--post-gpu`) generates as well as

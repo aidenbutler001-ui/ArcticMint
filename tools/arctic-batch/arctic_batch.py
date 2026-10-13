@@ -447,7 +447,7 @@ class Batch:
                                     self.log("slot: GPU %d released to %s" % (g, d["owner"]))
                             else:
                                 holder = locks.lock_holder(g)
-                                if holder and holder.lower() != a.lock_owner.lower():
+                                if holder and holder.lower() == st["owner"].lower():   # only the wanter's own run serves the request
                                     if not st["seen"]:
                                         self.log("slot: %s holds GPU %d" % (holder, g))
                                     st["seen"] = True

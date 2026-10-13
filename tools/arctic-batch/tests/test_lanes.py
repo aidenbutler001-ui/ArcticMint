@@ -185,7 +185,7 @@ class SlotYield(unittest.TestCase):
         i = mod.read_json(mod.lock_path(g))
         return i.get("owner") if i else None
 
-    def run_case(self, glpath, card, want_kwargs):
+    def run_case(self, glpath, card, want_kwargs, third_party=False):
         os.environ["GPULOCK_DIR"] = os.path.join(self.d, "locks-" + str(abs(hash(glpath)) % 1000))
         mod = tb.ab.load_gpulock(glpath)
         imgs = tb.make_imgs(os.makedirs(os.path.join(self.d, "i")) or os.path.join(self.d, "i"), list("abcdef"))
@@ -206,6 +206,12 @@ class SlotYield(unittest.TestCase):
         self.assertFalse(mod.res_path(card).exists() if hasattr(mod, "res_path") else False)    # reservation went with it
         other = 1 - card
         self.assertEqual(self.holder(mod, other), "expiramental3d")                            # the other card stays ours
+        if third_party:   # someone else's run on the yielded card must not clear Space Gothic's request or make the runner retake
+            self.assertTrue(mod.acquire(card, "third-party", "other"))
+            time.sleep(0.8); mod.release(card, "third-party")
+            time.sleep(1.5)
+            self.assertIsNone(self.holder(mod, card))                                          # not retaken: the want still stands
+            self.assertEqual(mod.foreign_demand(card, "expiramental3d")["owner"], "space-gothic")
         self.assertTrue(mod.acquire(card, "space-gothic", "rt test"))                           # their run
         time.sleep(1.5)
         self.assertEqual(self.holder(mod, card), "space-gothic")                               # no preemption, no grab-back
@@ -222,6 +228,11 @@ class SlotYield(unittest.TestCase):
         for gl in self.GPULOCKS:
             with self.subTest(gpulock=os.path.basename(gl)):
                 self.setUp(); self.run_case(gl, 0, {})
+
+    def test_third_party_run_does_not_clear_the_want(self):
+        for gl in self.GPULOCKS:
+            with self.subTest(gpulock=os.path.basename(gl)):
+                self.setUp(); self.run_case(gl, 0, {}, third_party=True)
 
     def test_yield_lane_a_card(self):
         for gl in self.GPULOCKS:

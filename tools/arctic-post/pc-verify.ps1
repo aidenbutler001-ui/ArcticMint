@@ -39,6 +39,13 @@
 .PARAMETER TailAreaTolPct
   Tail tolerance (default 0.1): max relative surface-area difference vs the legacy run, per tail stage. Hausdorff
   distance is not checked here (needs a mesh tool); compare the GLBs by hand if a tail run is suspicious.
+.PARAMETER Drop2FaceTolPct
+  Tolerance for the drop2 stage only (default 7): max relative face-count difference vs the legacy run. drop2 removes
+  components smaller than 3% of the largest one, so a 0.01% QEM difference moves whole components across that threshold.
+  Measured on the 4070 SUPER (log cabin, 2026-10-13): two identical runs differ by 0.59% faces / 0.40% area at drop2 and
+  by 1.14% / 1.08% against legacy, while every stage before drop2 differs by under 0.1% / 0.005%.
+.PARAMETER Drop2AreaTolPct
+  Tolerance for the drop2 stage only (default 2): max relative surface-area difference vs the legacy run.
 .PARAMETER FrontOnly
   Pass --stop-before-qem to post-replay (skips QEM/UV/GLB; much faster; no GLB comparison).
 .EXAMPLE
@@ -70,6 +77,8 @@ param(
     [switch]$StrictTail,
     [double]$TailFaceTolPct = 0.5,
     [double]$TailAreaTolPct = 0.1,
+    [double]$Drop2FaceTolPct = 7.0,
+    [double]$Drop2AreaTolPct = 2.0,
     [switch]$SkipBuild,
     [switch]$SkipDump,
     [switch]$SkipTests
@@ -608,8 +617,10 @@ try {
                             $a = $legacyRun.Stats[$st]; $b = $cur.Stats[$st]
                             $fPct = if ($a.F -gt 0) { 100.0 * [math]::Abs($b.F - $a.F) / $a.F } else { 0.0 }
                             $aPct = if ($a.Area -gt 0) { 100.0 * [math]::Abs($b.Area - $a.Area) / $a.Area } else { 0.0 }
-                            if ($fPct -gt $TailFaceTolPct) { [void]$tolProblems.Add(($cfg.Name + ' ' + $st + ': faces ' + $b.F + ' vs ' + $a.F + ' (' + $fPct.ToString('0.000', $inv) + '% > ' + $TailFaceTolPct + '%)')) }
-                            if ($aPct -gt $TailAreaTolPct) { [void]$tolProblems.Add(($cfg.Name + ' ' + $st + ': area ' + $b.Area + ' vs ' + $a.Area + ' (' + $aPct.ToString('0.000', $inv) + '% > ' + $TailAreaTolPct + '%)')) }
+                            $fTol = if ($st -eq 'drop2') { $Drop2FaceTolPct } else { $TailFaceTolPct }
+                            $aTol = if ($st -eq 'drop2') { $Drop2AreaTolPct } else { $TailAreaTolPct }
+                            if ($fPct -gt $fTol) { [void]$tolProblems.Add(($cfg.Name + ' ' + $st + ': faces ' + $b.F + ' vs ' + $a.F + ' (' + $fPct.ToString('0.000', $inv) + '% > ' + $fTol + '%)')) }
+                            if ($aPct -gt $aTol) { [void]$tolProblems.Add(($cfg.Name + ' ' + $st + ': area ' + $b.Area + ' vs ' + $a.Area + ' (' + $aPct.ToString('0.000', $inv) + '% > ' + $aTol + '%)')) }
                         } else { [void]$tolProblems.Add($cfg.Name + ' ' + $st + ': no face/area stats to check the tolerance') }
                     }
                 }
@@ -626,7 +637,7 @@ try {
         elseif ($tailProblems.Count -gt 0) {
             $verdict = if ($StrictTail) { 'FAIL (tail only)' }
                        elseif ($tolProblems.Count -gt 0) { 'FAIL (tail outside tolerance)' }
-                       else { 'PASS (front exact; tail within ' + $TailFaceTolPct + '% faces / ' + $TailAreaTolPct + '% area of legacy)' }
+                       else { 'PASS (front exact; tail within ' + $TailFaceTolPct + '% faces / ' + $TailAreaTolPct + '% area of legacy; drop2 ' + $Drop2FaceTolPct + '% / ' + $Drop2AreaTolPct + '%)' }
             foreach ($tp in $tolProblems) { [void]$tailProblems.Add('OUT OF TOLERANCE: ' + $tp) }
         }
         [void]$results.Add([pscustomobject]@{ Asset = $name; Verdict = $verdict; Problems = $problems; TailProblems = $tailProblems; Data = $runData })

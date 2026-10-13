@@ -77,7 +77,7 @@ xatlas and the GLB writer before the post-MT code). The GLB is compared with its
 field changes on every run, even for the untouched original code (checked in the cloud: with it masked, full-run GLBs
 are byte-identical at 1 and 4 threads and with `TRELLIS_POST_LEGACY=1`).
 
-Tail tolerance: if only the tail differs (GPU QEM is non-deterministic), each tail stage is compared with the legacy run on face count (`-TailFaceTolPct`, default 0.5%) and surface area (`-TailAreaTolPct`, default 0.1%): within both = `PASS (front exact; tail within ...)`, outside = `FAIL (tail outside tolerance)`. Hausdorff distance is not checked by the script.
+Tail tolerance: if only the tail differs (GPU QEM is non-deterministic), each tail stage is compared with the legacy run on face count (`-TailFaceTolPct`, default 0.5%) and surface area (`-TailAreaTolPct`, default 0.1%): within both = `PASS (front exact; tail within ...)`, outside = `FAIL (tail outside tolerance)`. The `drop2` stage has its own limits (`-Drop2FaceTolPct` 7%, `-Drop2AreaTolPct` 2%): it drops components under 3% of the largest one, so a 0.01% QEM difference moves whole components across the threshold (log cabin, same card: two identical runs differ by 0.59% faces / 0.40% area there, and 1.14% / 1.08% against legacy, with every earlier stage under 0.1% / 0.005%). Hausdorff distance is not checked by the script.
 
 Needs: Windows 10/11, Visual Studio Build Tools (C++ x64), CMake, Ninja (or the one VS ships), a CUDA toolkit with its
 bin dir on PATH or `CUDA_PATH`, git, ~15 GB free disk (build + ggml + two dumps of 0.3-0.6 GB), and an idle GPU 1.

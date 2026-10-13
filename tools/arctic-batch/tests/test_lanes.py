@@ -84,6 +84,81 @@ class LongestFirst(unittest.TestCase):
             self.assertEqual(tb.ab.cmd_compare(type("A", (), {"dir_a": base, "dir_b": lf})), 0)
 
 
+class PriorityOrder(unittest.TestCase):
+    def test_priority_then_arrival_or_longest_first(self):
+        pend = [dsp.Job("a", 100), dsp.Job("b", 300), dsp.Job("c", 200, priority=100), dsp.Job("d", 50, priority=100), dsp.Job("e")]
+        d = dsp.Dispatcher(lanes())
+        self.assertEqual([j.name for j in d.order(pend)], ["c", "d", "a", "b", "e"])
+        d = dsp.Dispatcher(lanes(), longest_first=True)
+        self.assertEqual([j.name for j in d.order(pend)], ["c", "d", "b", "e", "a"])   # e: no estimate = median 150 -> between b and a
+
+
+class LiveQueueTests(unittest.TestCase):
+    def setUp(self):
+        self.t = tempfile.TemporaryDirectory(); self.d = self.t.name
+        self.q = os.path.join(self.d, "q")
+        os.environ["FAKE_GEN_S"] = "0.6"; os.environ["FAKE_POST_S"] = "0.2"
+
+    def tearDown(self):
+        self.t.cleanup()
+
+    def test_poll_claims_once_and_rejects_bad_jobs(self):
+        import live_queue as lq
+        img = tb.make_imgs(os.makedirs(os.path.join(self.d, "i")) or os.path.join(self.d, "i"), ["x", "y"])
+        lq.submit(self.q, os.path.join(img, "x.png"), priority=7, pin="B")
+        lq.submit(self.q, os.path.join(img, "y.png"), name="X")                    # duplicate of x (case-insensitive)
+        lq.submit(self.q, os.path.join(img, "nope.png"))                             # missing image
+        open(os.path.join(self.q, "0-bad.job.json"), "w").write("{not json")
+        open(os.path.join(self.q, "partial.job.json.tmp"), "w").write("{}")          # a half-written file is ignored
+        got = lq.LiveQueue(self.q, lambda m: None).poll([])
+        self.assertEqual([(g["name"], g["priority"], g["pin"]) for g in got], [("x", 7, "B")])
+        self.assertEqual(len(os.listdir(os.path.join(self.q, "rejected"))), 6)     # 3 files + 3 .why.txt
+        self.assertEqual(lq.LiveQueue(self.q, lambda m: None).poll(["x"]), [])      # nothing is taken twice
+        self.assertFalse(lq.LiveQueue(self.q, lambda m: None).is_closed()); lq.close(self.q)
+        self.assertTrue(lq.LiveQueue(self.q, lambda m: None).is_closed())
+
+    def test_jobs_added_while_running_urgent_jumps_the_queue_and_output_is_hash_equal(self):
+        import live_queue as lq
+        base_in = tb.make_imgs(os.makedirs(os.path.join(self.d, "all")) or os.path.join(self.d, "all"), list("abcdeu"))
+        first = os.path.join(self.d, "first"); os.makedirs(first)
+        for n in "abcd":
+            os.replace(os.path.join(base_in, n + ".png"), os.path.join(first, n + ".png"))
+        os.replace(os.path.join(first, "a.png"), os.path.join(base_in, "a.png"))   # all/ = a,e,u ; first/ = b,c,d
+        # reference: the plain batch of the same six pictures
+        ref_in = tb.make_imgs(os.makedirs(os.path.join(self.d, "ref")) or os.path.join(self.d, "ref"), list("abcdeu"))
+        ref, live = os.path.join(self.d, "ref_out"), os.path.join(self.d, "live_out")
+        self.assertEqual(tb.run(ref_in, ref, "--gen-lanes", "2", "--lane2-speed", "1.0", "--min-gain-s", "0"), 0)
+        res = {}
+        th = threading.Thread(target=lambda: res.setdefault("rc", tb.run(first, live, "--gen-lanes", "2", "--lane2-speed", "1.0",
+                                                                        "--min-gain-s", "0", "--queue-dir", self.q)))
+        th.start(); time.sleep(0.4)   # b and c are generating, d is waiting
+        lq.submit(self.q, os.path.join(base_in, "e.png"), priority=0)
+        lq.submit(self.q, os.path.join(base_in, "u.png"), priority=100)
+        lq.submit(self.q, os.path.join(base_in, "a.png"), priority=0)
+        time.sleep(0.3); lq.close(self.q)
+        th.join(120); self.assertFalse(th.is_alive())
+        self.assertEqual(res["rc"], 0)
+        rows = {x["asset"]: x for x in tb.rows(live)[:-1]}
+        self.assertEqual(sorted(rows), list("abcdeu")); self.assertTrue(all(r["status"] == "ok" for r in rows.values()))
+        start = {n: r["gen_start"] for n, r in rows.items()}
+        self.assertLess(start["u"], start["e"]); self.assertLess(start["u"], start["a"])   # urgent beat the earlier normal jobs
+        self.assertEqual(tb.ab.cmd_compare(type("A", (), {"dir_a": ref, "dir_b": live})), 0)
+
+    def test_idle_exit_and_validation(self):
+        import contextlib, io
+        os.makedirs(self.q)
+        t0 = time.time()
+        self.assertEqual(tb.run(self._one(), os.path.join(self.d, "o"), "--gen-lanes", "2",
+                                "--lane2-speed", "1.0", "--queue-dir", self.q, "--idle-exit", "3"), 0)
+        self.assertGreaterEqual(time.time() - t0, 3.0)
+        with self.assertRaises(SystemExit):
+            tb.run(self._one(), os.path.join(self.d, "o2"), "--queue-dir", self.q)   # needs --gen-lanes 2
+
+    def _one(self):
+        d = os.path.join(self.d, "one"); os.makedirs(d, exist_ok=True)
+        return tb.make_imgs(d, ["z"])
+
+
 class Gate(unittest.TestCase):
     def test_admission_and_release(self):
         g = dsp.VramGate({0: 8.0}, {0: 0.0}, margin_gb=0.4)

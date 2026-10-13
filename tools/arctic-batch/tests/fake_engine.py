@@ -23,6 +23,8 @@ if mode == "cli":
     dump = args[args.index("--dump-post") + 1] if "--dump-post" in args else os.environ["TRELLIS_DUMP_POST"]
     print("ARGS " + json.dumps({"argv": args, "env": {k: os.environ.get(k) for k in ENV_KEYS}}))
     if "bad" in os.path.basename(img): sys.exit(3)
+    if os.environ.get("FAKE_LANE_B_OOM") and os.environ.get("CUDA_VISIBLE_DEVICES") == "0":
+        print("RuntimeError: CUDA error: out of memory"); sys.exit(1)
     time.sleep(GEN)
     body = b"DUMP" + hashlib.sha256(open(img, "rb").read()).digest()
     open(dump, "wb").write(body)

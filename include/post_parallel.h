@@ -59,7 +59,21 @@ public:
         for (;;) {
             uint64_t expected = kEmpty;
             if (keys_[s].compare_exchange_strong(expected, key, std::memory_order_relaxed) || expected == key) {
-                vals_[s] = val;
+                vals_[s].store(val, std::memory_order_relaxed);
+                return;
+            }
+            s = (s + 1) & mask_;
+        }
+    }
+    // Duplicate keys allowed: the largest value wins (= "last occurrence wins" when val is the
+    // input index), independent of thread schedule. Not for use together with insert().
+    void insert_max(uint64_t key, int32_t val) {
+        size_t s = (size_t)slot_of(key);
+        for (;;) {
+            uint64_t expected = kEmpty;
+            if (keys_[s].compare_exchange_strong(expected, key, std::memory_order_relaxed) || expected == key) {
+                int32_t cur = vals_[s].load(std::memory_order_relaxed);
+                while (cur < val && !vals_[s].compare_exchange_weak(cur, val, std::memory_order_relaxed)) {}
                 return;
             }
             s = (s + 1) & mask_;
@@ -71,7 +85,7 @@ public:
         size_t i = (size_t)slot_of(key);
         for (;;) {
             const uint64_t k = keys_[i].load(std::memory_order_relaxed);
-            if (k == key) return vals_[i];
+            if (k == key) return vals_[i].load(std::memory_order_relaxed);
             if (k == kEmpty) return -1;
             i = (i + 1) & mask_;
         }
@@ -84,7 +98,7 @@ private:
         return k & mask_;
     }
     std::unique_ptr<std::atomic<uint64_t>[]> keys_;
-    std::unique_ptr<int32_t[]> vals_;
+    std::unique_ptr<std::atomic<int32_t>[]> vals_;
     uint64_t mask_ = 0;
     bool has_empty_ = false;
     int32_t empty_val_ = -1;

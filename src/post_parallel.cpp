@@ -215,9 +215,9 @@ void FlatU64Map::init(int64_t n) {
     mask_ = cap - 1;
     has_empty_ = false; empty_val_ = -1;
     keys_.reset(new std::atomic<uint64_t>[cap]);
-    vals_.reset(new int32_t[cap]);
+    vals_.reset(new std::atomic<int32_t>[cap]);
     parallel_for((int64_t)cap, 1 << 16, [&](int64_t b, int64_t e) {
-        for (int64_t i = b; i < e; ++i) { keys_[(size_t)i].store(kEmpty, std::memory_order_relaxed); vals_[(size_t)i] = -1; }
+        for (int64_t i = b; i < e; ++i) { keys_[(size_t)i].store(kEmpty, std::memory_order_relaxed); vals_[(size_t)i].store(-1, std::memory_order_relaxed); }
     });
 }
 

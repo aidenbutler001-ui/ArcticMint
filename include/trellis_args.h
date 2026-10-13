@@ -101,11 +101,16 @@ struct TrellisParams {
                                 // i32 faces[F*3]; i32 coords[Mv*3]; f32 pbr6[Mv*6];
                                 // same layout as the TRELLIS_DUMP_POST debug env)
     bool bg_only = false;       // background removal only: write the cutout and skip the rest
+    bool ss_only = false;       // stop after the sparse-structure stage: write <out>_ss.json (voxel bbox per seed), no mesh
+    int  ss_seeds = 1;          // with --ss-only: seeds seed, seed+1, ... seed+N-1 share one preprocess + DINOv3 pass
 
     int  steps    = 0;          // flow sampler steps; 0 = model default (12). Lowering this
                                 //   trades output quality for turnaround and is meant for
                                 //   backend bring-up: a CPU and an NPU run at the same low
                                 //   step count are still directly comparable to each other.
+    int  steps_ss = 0;          // sparse-structure flow only: 0 = same as `steps`. A prototype run can sample the
+                                //   shape and texture flows at 12 steps and keep the structure (and the W x D x H it
+                                //   fixes) identical to a `--ss-only --steps 24` sweep.
     int  sched = -1;            // multi-backend scheduler: -1 auto (on unless the primary
                                 // backend is the CPU), 0 off, 1 on. Required for partial
                                 // op-coverage accelerators like the Hexagon NPU.

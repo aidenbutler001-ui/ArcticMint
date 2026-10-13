@@ -1,5 +1,8 @@
 # Arctic: multithreaded CPU post-processing (`claude/arctic-post-mt`)
 
+Repo: `aidenbutler001-ui/ArcticMint` (private, standalone). This work started in the old public fork
+`ArcticMint_trellis.cpp` (merged there as PR #2; see `docs/arctic/pr-history.md`); that fork is being deleted.
+
 Goal: make weld / hole fill / BVH / remesh / clean much faster using sort-based flat data structures and `std::thread`,
 with output byte-identical to the original code. Plan and profile: project repo
 `research/notes/arctic-post-profile.md`.
@@ -98,9 +101,13 @@ Dumps (synthetic, `tools/arctic-post/gen_dump.py`): `d512a` (N=512 seed 1), `d51
 | remesh | a1c95f0f19bb550c / 61796f0f2a6bfa0d | f177eabec6fcda54 / 7da7497e77431f32 |
 | clean_mesh | (same as remesh, flipped 0) | (same as remesh) |
 | drop_components | b902f0840aa4139f / b2e48a8f4e163f82 | 981d7b21fc10c5ea / 94babccf23777da4 |
-| final GLB sha256[:16] | 4fe85a54c0cef47b | (front chain only) |
+| final GLB sha256[:16], `generated` timestamp zeroed | 55f73c86f49409fc | (front chain only) |
 
-d512b final GLB 7999c642c96bbadd. Full tables: see `docs/arctic/post-mt-golden.txt`.
+d512b final GLB (timestamp zeroed) fd4048a1a0b46d30. The raw `glb` lines in `post-mt-golden.txt` include the GLB's
+`"generated"` UTC timestamp, which changes on every run even for the original code; compare GLBs with that field zeroed
+(`pc-verify.ps1` does). With it masked, full-run GLBs are byte-identical at 1 and 4 threads and with
+`TRELLIS_POST_LEGACY=1` (also checked: two runs of the untouched original binary differ only in that timestamp).
+Full tables: see `docs/arctic/post-mt-golden.txt`.
 
 ## Timings (seconds, 4 vCPU container, d1024 = 4.98M raw faces -> 9.1M after remesh)
 
@@ -114,3 +121,63 @@ d512b final GLB 7999c642c96bbadd. Full tables: see `docs/arctic/post-mt-golden.t
 | clean_mesh | 18.5 | 0.7 | yes |
 | drop_components | 0.6 | 0.6 | yes |
 | front chain wall / peak RSS | 66.7 s / 1.73 GB | 33.6 s / 1.47 GB | yes |
+
+## Results at the PC's size: 16.45M raw faces -> 29.4M after remesh (`dC.bin`, 4 vCPU container)
+
+Generated with `gen_dump.py dC.bin --N 1024 --pbr-res 512 --seed 5 --shell 0.03 --amp 2.0 --scale 1.2`; run with
+`--geometry-res 1024 --band 2 --fill-holes --no-audit --stop-before-qem`. Per-stage vertex and face hashes
+identical to the legacy binary at 1 and 4 threads (`input`..`drop_components`; the legacy binary just lacks the
+`area=` column). Seconds:
+
+| Stage | legacy (1 thread, hash maps) | new, 4 threads | new, 1 thread | new 4 thr + canonical holes |
+|---|---|---|---|---|
+| fill_holes (centroid) | 16.9 | 19.4 (legacy order, unchanged) | 19.7 | **1.0** |
+| weld_vertices | 17.4 | **4.6** | 15.1 | 4.9 |
+| fill_small_holes | 25.4 | 28.2 (legacy order, unchanged) | 29.5 | **1.9** |
+| TriBvh::build | 7.5 | **2.6** | 7.4 | 2.8 |
+| remesh_dc | 92.3 | **75.1** | 284.1 | 77.3 |
+| clean_mesh | 73.5 | **3.0** | 5.0 | 3.0 |
+| clean + drop_components | 75.7 | **5.4** | 7.8 | 5.6 |
+| front chain wall | 235.9 | **136.3** | 364.7 | **94.5** |
+| peak RSS | 5.47 GB | 4.51 GB | 4.53 GB | 4.24 GB |
+
+(Legacy remesh already used all 4 threads for its UDF passes; the 1-thread column is the new code with
+`TRELLIS_POST_THREADS=1`.) With the canonical hole order the front chain is 2.5x faster than legacy at 4 threads and
+memory is lower. Canonical order also changes the remesh by 8 faces here (29,383,316 vs 29,383,308) because the
+fill patches differ.
+
+Remesh breakdown at 4 threads (`TRELLIS_POST_TIMING=1`): candidate bitset 2.7, active voxels (UDF) 28.0, voxel/vertex
+tables 10.0, UDF at grid vertices 26.0, dual vertices 3.3, quads + compaction 4.9. The two UDF passes (54 s, BVH
+closest-point queries) are ~72% of what is left and scale with cores: at 24 threads expect ~9 s, so the remaining
+serial-ish parts (tables 10 s at 4 threads) become the next target. `dual_grid_to_mesh` (stage 0, hash lookups) and the
+`audit()` calls in `post-replay` were not touched.
+
+### Update: remesh tables without hashing (dense occupancy + rank)
+
+`remesh_dc` now keeps active voxels and grid vertices in dense occupancy bitsets with per-word prefix popcounts
+(`DenseSet`): lookup = bounds check, bit test, popcount. A voxel's id is its rank among set cells (same as its index
+in `acoord`, which is in linear order). Grid vertices are numbered by rank in linear vertex order instead of first
+visit; vertex ids only index `fvert` (and, in the debug TETS branch, a dedupe key), so the output is unchanged.
+This removes the 13-probe first-visit test and both flat tables (up to ~1.5 GB at 16M faces).
+
+16.45M-face dump, 4 vCPU, hashes identical to legacy at 1 and 4 threads:
+
+| | before (flat hash tables) | dense tables |
+|---|---|---|
+| voxel/vertex tables (4 thr) | 10.0 s | 0.54 s |
+| dual vertices (4 thr) | 3.3 s | 2.1 s |
+| remesh_dc total (4 thr) | 75.1 s | 64.5 s |
+| remesh_dc total (1 thr) | 284.1 s | 236.2 s |
+| front chain wall, legacy hole order, 4 thr | 136.3 s | 124.9 s |
+| peak RSS | 4.51 GB | 3.29 GB |
+
+### Update: `dual_grid_to_mesh` (stage 0, runs inside trellis-cli before the post stages)
+
+Called once from `trellis_cli.cpp` (and nowhere else), so the function-level change covers the CLI path. Vertex
+arithmetic is the same code (a lambda shared by both paths); the coordinate map is a `FlatU64Map` filled with
+`insert_max` (legacy `cmap[key] = i` keeps the LAST duplicate, the largest index does too); faces are built per fixed
+chunk of voxels and concatenated in chunk order. `tools/arctic-post/dualgrid_bench.cpp` builds a synthetic `ShapeOut`
+from a dump (parent-major order like the C2S output, optional duplicate coordinates) and compares byte for byte at
+1,2,4,7,16 threads: identical. 7.97M voxels at res 1024: legacy 3.3 s, new 4.5 s (1 thread) / 2.2 s (2) / 1.2 s (4).
+Small because the stage is cheap; forced single-thread runs are ~1 s slower than legacy (`TRELLIS_POST_LEGACY=1`
+restores it). Real shape-decoder features were not available in the cloud, so the features are random.

@@ -116,6 +116,10 @@ void print_usage(const char* argv0, bool server) {
         "      --steps N           flow sampler steps (default 12). Lower is faster and\n"
         "                          rougher; useful for backend bring-up, where a CPU and\n"
         "                          an NPU run at the same N stay directly comparable.\n"
+        "      --steps-ss N        sampler steps for the sparse-structure flow only (default:\n"
+        "                          the --steps value). With --steps 12 --steps-ss 24 the shape and\n"
+        "                          texture flows run cheap while the structure, and so the\n"
+        "                          object's W x D x H, matches a `--ss-only --steps 24` sweep.\n"
         "      --res 512|1024|1536 geometry resolution\n"
         "      --max-tokens N      HR token budget              (default 49152)\n"
         "      --bg-removal MODE   threshold | birefnet   (default: auto -- a pre-matted\n"
@@ -144,6 +148,10 @@ void print_usage(const char* argv0, bool server) {
         "                          exit (skips remesh/decimate/UV/bake/GLB) -- for external\n"
         "                          post-processing pipelines\n"
         "      --bg-only           background removal only: write the cutout and skip the rest\n"
+        "      --ss-only           stop after the sparse-structure stage and write <out>_ss.json: the\n"
+        "                          active-voxel bounding box (W/D/H in 1/32 cells) per seed, no mesh\n"
+        "      --ss-seeds N        with --ss-only: run seeds SEED .. SEED+N-1 (default 1); seed S gives\n"
+        "                          the same structure as a normal run with --seed S and the same --steps\n"
         "      --retopo GRID FIRST_FACES FINAL_FACES  native quad export (Linux, retopo build)\n"
         "      --retopo-atlas PX   quad atlas size: 1024, 2048, 4096 (default 4096)\n"
         "      --retopo-no-weld-fill  skip initial weld/fill before tetra remesh\n"
@@ -211,6 +219,7 @@ bool parse_args(int argc, char** argv, TrellisParams& p) {
         else if (a == "-t" || a == "--threads") { const char* v = need(a.c_str()); if (!v) return false; p.threads = atoi(v); }
         else if (a == "-v" || a == "--verbose") { p.verbose = true; }
         else if (a == "--steps")                { const char* v = need(a.c_str()); if (!v) return false; p.steps = atoi(v); }
+        else if (a == "--steps-ss")             { const char* v = need(a.c_str()); if (!v) return false; p.steps_ss = atoi(v); }
         else if (a == "--sched")                { const char* v = need(a.c_str()); if (!v) return false;
                                                   if (strcmp(v, "on") == 0 || strcmp(v, "1") == 0) p.sched = 1;
                                                   else if (strcmp(v, "off") == 0 || strcmp(v, "0") == 0) p.sched = 0;
@@ -238,6 +247,11 @@ bool parse_args(int argc, char** argv, TrellisParams& p) {
                                                          : (std::strcmp(v,"on")==0 || std::strcmp(v,"1")==0 || std::strcmp(v,"true")==0) ? 1 : -1; }
         else if (a == "--dump-bg")              { p.dump_bg = true; }
         else if (a == "--bg-only")              { p.bg_only = true; p.dump_bg = true; }
+        else if (a == "--ss-only")              { p.ss_only = true; }
+        else if (a == "--ss-seeds")             { const char* v = need(a.c_str()); if (!v) return false;
+                                                  if (!integer(v, p.ss_seeds)) return false;
+                                                  if (p.ss_seeds < 1 || p.ss_seeds > 4096) {
+                                                      fprintf(stderr, "[trellis] --ss-seeds must be 1..4096\n"); return false; } }
         else if (a == "--retopo")               { const char* g=need(a.c_str()); if (!g) return false;
                                                   const char* f=need(a.c_str()); if (!f) return false;
                                                   const char* q=need(a.c_str()); if (!q) return false;
@@ -276,6 +290,10 @@ bool parse_args(int argc, char** argv, TrellisParams& p) {
     {
         std::string error;
         if (!check_faces_compat(p, error)) { fprintf(stderr, "[trellis] %s\n", error.c_str()); return false; }
+    }
+    if (!p.ss_only && p.ss_seeds != 1) {
+        fprintf(stderr, "[trellis] --ss-seeds requires --ss-only\n");
+        return false;
     }
     if (!p.retopo && p.retopo_no_weld_fill) {
         fprintf(stderr,"[trellis] --retopo-no-weld-fill requires --retopo\n");

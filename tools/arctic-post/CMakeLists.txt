@@ -7,7 +7,7 @@ set(CMAKE_CXX_STANDARD 17)
 get_filename_component(R "${CMAKE_CURRENT_LIST_DIR}/../.." ABSOLUTE)
 find_package(Threads REQUIRED)
 set(SRCS mesh_glb tri_bvh mesh_shape quad_refinement quad_refinement_gates quad_refinement_io quad_components
-         quad_topology quad_component_cover uv_overlap_cover uv_bake remesh_dc decimate_qem post_parallel post_mesh)
+         quad_topology quad_component_cover uv_overlap_cover uv_bake remesh_dc decimate_qem post_parallel post_mesh dual_grid)
 set(SL "")
 foreach(s ${SRCS})
   list(APPEND SL ${R}/src/${s}.cpp)
@@ -22,3 +22,14 @@ add_executable(edgebench ${CMAKE_CURRENT_LIST_DIR}/edgebench.cpp)
 target_link_libraries(edgebench PRIVATE Threads::Threads)
 add_executable(post-equiv-test ${CMAKE_CURRENT_LIST_DIR}/post_equiv_test.cpp)
 target_link_libraries(post-equiv-test PRIVATE arctic_post_core)
+add_executable(dualgrid-bench ${CMAKE_CURRENT_LIST_DIR}/dualgrid_bench.cpp)
+target_link_libraries(dualgrid-bench PRIVATE arctic_post_core)
+
+# phase_lock.h (cross-process lock for the post GPU's QEM / bake phases): a header-only test, and decimate_qem.cpp compiled WITH
+# TRELLIS_HAVE_GPU_DECIMATE against a stub GPU function so the real call site runs without CUDA. Driven by test_phase_lock.py.
+add_executable(phase-lock-test ${CMAKE_CURRENT_LIST_DIR}/phase_lock_test.cpp)
+target_include_directories(phase-lock-test PRIVATE ${R}/include)
+target_link_libraries(phase-lock-test PRIVATE Threads::Threads)
+add_executable(qem-lock-test ${CMAKE_CURRENT_LIST_DIR}/qem_lock_test.cpp ${R}/src/decimate_qem.cpp)
+target_compile_definitions(qem-lock-test PRIVATE TRELLIS_HAVE_GPU_DECIMATE)
+target_link_libraries(qem-lock-test PRIVATE arctic_post_core)

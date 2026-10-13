@@ -54,6 +54,36 @@ class Choose(unittest.TestCase):
         self.assertAlmostEqual(b.speed, 0.3)
 
 
+class LongestFirst(unittest.TestCase):
+    def test_order_slowest_first_unknown_is_median_and_stable(self):
+        items = [("pa", "a"), ("pb", "b"), ("pc", "c"), ("pd", "d"), ("pe", "e")]
+        got = tb.ab.longest_first(items, {"a": 100, "b": 600, "d": 300, "e": 600})
+        self.assertEqual([n for _, n in got], ["b", "e", "c", "d", "a"])   # c unknown = median 450; b/e tie keeps queue order
+        self.assertEqual(tb.ab.longest_first(items, {}), items)
+
+    def test_runner_order_is_opt_in_and_outputs_are_hash_equal(self):
+        import contextlib, io
+        with tempfile.TemporaryDirectory() as d:
+            imgs = tb.make_imgs(os.makedirs(os.path.join(d, "i")) or os.path.join(d, "i"), list("abcd"))
+            os.environ["FAKE_GEN_S"] = "0.1"; os.environ["FAKE_POST_S"] = "0.1"
+            base, lf = os.path.join(d, "base"), os.path.join(d, "lf")
+            buf = io.StringIO()
+            with contextlib.redirect_stdout(buf):
+                self.assertEqual(tb.run(imgs, base), 0)
+            self.assertNotIn("order: longest first", buf.getvalue())
+            est = os.path.join(d, "est.csv")
+            with open(est, "w", newline="") as f:
+                w = csv.writer(f); w.writerow(["asset", "status", "gen_s"])
+                for n, g in (("a", 10), ("b", 20), ("c", 40), ("d", 30)):
+                    w.writerow([n, "ok", g])
+            buf = io.StringIO()
+            with contextlib.redirect_stdout(buf):
+                self.assertEqual(tb.run(imgs, lf, "--order", "longest-first", "--est-from", est), 0)
+            self.assertIn("order: longest first -> c, d, b, a", buf.getvalue())
+            self.assertEqual([x["asset"] for x in tb.rows(lf)[:-1]], list("abcd"))   # csv keeps the given order
+            self.assertEqual(tb.ab.cmd_compare(type("A", (), {"dir_a": base, "dir_b": lf})), 0)
+
+
 class Gate(unittest.TestCase):
     def test_admission_and_release(self):
         g = dsp.VramGate({0: 8.0}, {0: 0.0}, margin_gb=0.4)

@@ -90,6 +90,12 @@ overlap faster than serial, identical masked GLBs, env (threads, `CUDA_VISIBLE_D
 - **Run order = argument order** for files (directories are sorted): pass the longest generation first and the cheapest
   post + finish last.
 
+## Longest-first order (`--order longest-first`, opt-in)
+
+Starts the slowest jobs first so both cards finish together (item 13 estimate: 60-115 s per batch). Needs `--est-from <earlier
+batch.csv>`; without it, or with default `--order queue`, nothing changes. A job missing from the csv counts as the median one.
+Only the start order changes: `batch.csv` rows keep the given order and each prop's output is hash-equal (tests/test_lanes.py).
+
 ## Second generation lane (`--gen-lanes 2`, opt-in)
 
 Default `--gen-lanes 1` changes nothing. With `2`, the 3060 Ti (`--lane2-gpu`, must equal `--post-gpu`) generates as well as

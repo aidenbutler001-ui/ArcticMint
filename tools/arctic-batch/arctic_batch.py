@@ -397,10 +397,7 @@ class Batch:
         who takes what. A job whose generation runs out of memory on lane B is re-queued once, pinned to lane A."""
         import dispatcher as dsp
         a = self.a
-        est = {}
-        if a.est_from:
-            with open(a.est_from, encoding="utf-8-sig") as f:
-                est = {r["asset"]: float(r["gen_s"]) for r in csv.DictReader(f) if r.get("status") == "ok" and r.get("gen_s")}
+        est = load_est(a.est_from) if a.est_from else {}
         vram = dict(kv.split("=", 1) for kv in a.job_vram)
         pins = dict(kv.split("=", 1) for kv in a.pin)
         caps = dict((int(k), float(v)) for k, v in (kv.split("=", 1) for kv in a.gpu_cap_gb.split(",")))
@@ -727,6 +724,23 @@ def preflight(a, log=print):
     return {g: v / 1024.0 for g, v in used.items()}
 
 
+def load_est(path):
+    """gen_s per asset from an earlier batch.csv (status ok): the job-size estimates."""
+    with open(path, encoding="utf-8-sig") as f:
+        return {r["asset"]: float(r["gen_s"]) for r in csv.DictReader(f) if r.get("status") == "ok" and r.get("gen_s")}
+
+
+def longest_first(items, est):
+    """Queue order with the slowest jobs first (stable). A job with no estimate counts as the median known one, so it
+    keeps its place among the known jobs instead of dropping to the end. Order only: each job's output is unchanged."""
+    import statistics
+    known = [est[n] for _, n in items if n in est]
+    if not known:
+        return list(items)
+    mid = statistics.median(known)
+    return sorted(items, key=lambda it: -est.get(it[1], mid))
+
+
 def cmd_run(a):
     imgs = collect_images(a.images)
     names, items = set(), []
@@ -744,11 +758,14 @@ def cmd_run(a):
         used = preflight(a) if a.preflight else None
         b = Batch(a)
         t0 = time.time()
+        todo = longest_first(items, load_est(a.est_from)) if a.order == "longest-first" else items
+        if todo is not items:
+            b.log("order: longest first -> " + ", ".join(n for _, n in todo))
         try:
             if a.gen_lanes == 2:
-                b.run_lanes(items, used)
+                b.run_lanes(todo, used)
             else:
-                (b.run_serial if a.serial else b.run_overlap)(items)
+                (b.run_serial if a.serial else b.run_overlap)(todo)
         except BaseException as e:  # serial-mode Ctrl+C; overlap mode handles its own
             b.log("ABORT: %r" % (e,)); b.abort(); b.aborted = e
         wall = time.time() - t0
@@ -841,7 +858,8 @@ def build_parser():
                    help="remove KEY from lane B's environment (streaming off = unset TRELLIS_CONVNEXT_STREAM_ALL; stages >= "
                         "TRELLIS_CONVNEXT_STREAM_GB, default 2 GB, still stream)")
     g.add_argument("--est-from", default="", metavar="batch.csv",
-                   help="gen_s per asset from an earlier batch.csv on lane A: the dispatcher's job-size estimates")
+                   help="gen_s per asset from an earlier batch.csv on lane A: the dispatcher's job-size estimates "
+                        "(also the sizes for --order longest-first)")
     g.add_argument("--job-vram", action="append", default=[], metavar="NAME=GB", help="VRAM one generation needs (default --gen-need-gb)")
     g.add_argument("--pin", action="append", default=[], metavar="NAME=A|B", help="force a job onto a lane")
     g.add_argument("--min-gain-s", type=float, default=30.0, help="lane B takes a job only if the projected makespan drops by this much")
@@ -854,6 +872,10 @@ def build_parser():
                    help="fixed = post/finish only on --post-gpu (wait for VRAM); flexible = may use the generation GPU when the 3060 Ti "
                         "is full (needs the QEM cross-card check first)")
     g.add_argument("--gate-timeout", type=float, default=900, help="seconds a post/finish waits for VRAM before it starts anyway")
+    r.add_argument("--order", choices=["queue", "longest-first"], default="queue",
+                   help="job start order (OPT-IN; default queue = as given). longest-first starts the slowest jobs first so the "
+                        "cards finish together; needs --est-from (batch.csv of an earlier run), without it the order is unchanged. "
+                        "batch.csv rows stay in the given order; outputs are unchanged")
     r.add_argument("--keep-dumps", action="store_true")
     c = sub.add_parser("compare", help="compare GLBs of two output dirs (timestamp masked)")
     c.add_argument("dir_a")

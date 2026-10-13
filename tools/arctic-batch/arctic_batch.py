@@ -406,7 +406,13 @@ class Batch:
         base.setdefault(a.lane2_gpu, 0.0)
         la = dsp.Lane("A", a.gen_gpu, 1.0, caps.get(a.gen_gpu, 12.0), base[a.gen_gpu], primary=True)
         lb = dsp.Lane("B", a.lane2_gpu, a.lane2_speed, caps.get(a.lane2_gpu, 8.0), base[a.lane2_gpu])
-        disp = dsp.Dispatcher([la, lb], a.vram_margin_gb, a.min_gain_s)
+        disp = dsp.Dispatcher([la, lb], a.vram_margin_gb, a.min_gain_s, longest_first=(a.order == "longest-first"))
+        live = None
+        if a.queue_dir:
+            import live_queue
+            live = live_queue.LiveQueue(a.queue_dir, self.log)
+            self.live_names = []
+        idle = {"since": None}
         self.gate = dsp.VramGate({g: caps.get(g, 12.0) for g in (a.gen_gpu, a.lane2_gpu)}, base, a.vram_margin_gb)
         img_of = dict((n, p) for p, n in items)
         pend = [dsp.Job(n, est.get(n), float(vram.get(n, a.gen_need_gb)), pin=pins.get(n)) for _, n in items]
@@ -415,6 +421,16 @@ class Batch:
         cond = threading.Condition()
         npost, threads = a.post_workers, max(1, a.total_threads // a.post_workers)
         retried = set()
+
+        def ingest():   # under cond: take the new files of the live queue (OPT-IN: --queue-dir)
+            if live is None:
+                return
+            for jd in live.poll(list(img_of)):
+                img_of[jd["name"]] = jd["image"]
+                self.live_names.append(jd["name"])
+                pend.append(dsp.Job(jd["name"], jd["est_s"] if jd["est_s"] is not None else est.get(jd["name"]),
+                                    float(jd["vram_gb"] if jd["vram_gb"] is not None else a.gen_need_gb), jd["priority"], jd["pin"]))
+                self.log("%s: queued live (priority %d%s)" % (jd["name"], jd["priority"], ", pin " + jd["pin"] if jd["pin"] else ""))
 
         def pworker():
             while True:
@@ -446,6 +462,7 @@ class Batch:
                     while True:
                         if self.stop.is_set():
                             return
+                        ingest()
                         j = disp.choose(time.time(), lane, pend)
                         if j is not None:
                             pend.remove(j)
@@ -453,7 +470,18 @@ class Batch:
                             lane.est_end = lane.started + (j.est_s / lane.speed if j.est_s else 0.0)
                             break
                         if not pend and all(l.job is None for l in disp.lanes if l is not lane):
-                            return
+                            if live is None:
+                                return
+                            if live.is_closed():
+                                ingest()   # a job written before CLOSE is visible now
+                                if not pend:
+                                    return
+                            elif a.idle_exit > 0:
+                                idle["since"] = idle["since"] or time.time()
+                                if time.time() - idle["since"] >= a.idle_exit:
+                                    return
+                        else:
+                            idle["since"] = None
                         cond.wait(2.0)
                 self.log("%s: generation -> lane %s (GPU %d)" % (j.name, lane.name, lane.gpu))
                 dump = self.do_gen(img_of[j.name], j.name, lane2=not lane.primary)
@@ -742,7 +770,7 @@ def longest_first(items, est):
 
 
 def cmd_run(a):
-    imgs = collect_images(a.images)
+    imgs = collect_images(a.images) if a.images else []
     names, items = set(), []
     for p in imgs:
         n = os.path.splitext(os.path.basename(p))[0]
@@ -769,6 +797,7 @@ def cmd_run(a):
         except BaseException as e:  # serial-mode Ctrl+C; overlap mode handles its own
             b.log("ABORT: %r" % (e,)); b.abort(); b.aborted = e
         wall = time.time() - t0
+    items = items + [(None, n) for n in getattr(b, "live_names", [])]   # jobs that arrived through --queue-dir
     path = b.write_csv([n for _, n in items], wall)
     b.log("wall %.1fs; csv %s; report %s" % (wall, path, b.write_report([n for _, n in items], wall)))
     if b.aborted is not None:
@@ -792,7 +821,7 @@ def build_parser():
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = p.add_subparsers(dest="cmd")
     r = sub.add_parser("run", help="run a batch")
-    r.add_argument("images", nargs="+", help="image files and/or directories")
+    r.add_argument("images", nargs="*", help="image files and/or directories (optional with --queue-dir)")
     r.add_argument("-o", "--out", required=True)
     r.add_argument("-m", "--models", default=r"C:\AI\trellis\models")
     r.add_argument("--cli", default="trellis-cli", help="trellis-cli command (path or 'python fake.py')")
@@ -860,6 +889,11 @@ def build_parser():
     g.add_argument("--est-from", default="", metavar="batch.csv",
                    help="gen_s per asset from an earlier batch.csv on lane A: the dispatcher's job-size estimates "
                         "(also the sizes for --order longest-first)")
+    g.add_argument("--queue-dir", default="", metavar="DIR",
+                   help="OPT-IN live queue (needs --gen-lanes 2): jobs added to DIR while the batch runs (`submit`), a priority per "
+                        "job, ends on `close` (live_queue.py). Images on the command line are optional with it")
+    g.add_argument("--idle-exit", type=float, default=0, metavar="S",
+                   help="with --queue-dir: also exit after S seconds with nothing to do (default 0 = wait for `close`)")
     g.add_argument("--job-vram", action="append", default=[], metavar="NAME=GB", help="VRAM one generation needs (default --gen-need-gb)")
     g.add_argument("--pin", action="append", default=[], metavar="NAME=A|B", help="force a job onto a lane")
     g.add_argument("--min-gain-s", type=float, default=30.0, help="lane B takes a job only if the projected makespan drops by this much")
@@ -877,6 +911,13 @@ def build_parser():
                         "cards finish together; needs --est-from (batch.csv of an earlier run), without it the order is unchanged. "
                         "batch.csv rows stay in the given order; outputs are unchanged")
     r.add_argument("--keep-dumps", action="store_true")
+    sb = sub.add_parser("submit", help="add a job to a live queue (--queue-dir of a running batch)")
+    sb.add_argument("--queue-dir", required=True); sb.add_argument("--image", required=True); sb.add_argument("--name", default=None)
+    sb.add_argument("--priority", type=int, default=0, help="higher starts first (default 0; 100 = urgent)")
+    sb.add_argument("--est-s", type=float, default=None); sb.add_argument("--vram-gb", type=float, default=None)
+    sb.add_argument("--pin", choices=["A", "B"], default=None)
+    cl = sub.add_parser("close", help="no more jobs for the live queue: the batch finishes what is queued and exits")
+    cl.add_argument("--queue-dir", required=True)
     c = sub.add_parser("compare", help="compare GLBs of two output dirs (timestamp masked)")
     c.add_argument("dir_a")
     c.add_argument("dir_b")
@@ -885,14 +926,26 @@ def build_parser():
 
 def main(argv=None):
     argv = list(sys.argv[1:] if argv is None else argv)
-    if argv and argv[0] not in ("run", "compare", "-h", "--help"):
+    if argv and argv[0] not in ("run", "compare", "submit", "close", "-h", "--help"):
         argv.insert(0, "run")
     a = build_parser().parse_args(argv)
     if a.cmd == "compare":
         return cmd_compare(a)
+    if a.cmd in ("submit", "close"):
+        import live_queue
+        if a.cmd == "close":
+            live_queue.close(a.queue_dir)
+            print("closed " + a.queue_dir)
+        else:
+            print(live_queue.submit(a.queue_dir, a.image, a.name, a.priority, a.est_s, a.vram_gb, a.pin))
+        return 0
     if a.cmd != "run":
         build_parser().print_help()
         return 2
+    if a.queue_dir and a.gen_lanes != 2:
+        raise SystemExit("--queue-dir needs --gen-lanes 2")
+    if not a.images and not a.queue_dir:
+        raise SystemExit("no images (give images, or --queue-dir to feed jobs live)")
     if a.post_workers < 1 or a.max_queue < 1:
         raise SystemExit("--post-workers and --max-queue must be >= 1")
     if a.gen_lanes == 2 and (a.serial or a.lane2_gpu != a.post_gpu or a.lane2_gpu == a.gen_gpu):

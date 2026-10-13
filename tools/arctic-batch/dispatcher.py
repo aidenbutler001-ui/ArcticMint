@@ -29,8 +29,9 @@ class Job:
 class Dispatcher:
     """Not thread-safe by itself: the runner calls it under its condition variable."""
 
-    def __init__(self, lanes, margin_gb=0.4, min_gain_s=30.0, default_speed=0.5):
+    def __init__(self, lanes, margin_gb=0.4, min_gain_s=30.0, default_speed=0.5, longest_first=False):
         self.lanes = list(lanes)
+        self.longest_first = longest_first
         self.margin_gb, self.min_gain_s = margin_gb, min_gain_s
         self.primary = next(l for l in self.lanes if l.primary)
         for l in self.lanes:
@@ -44,9 +45,14 @@ class Dispatcher:
     def allowed(self, job, lane):
         return (job.pin is None or job.pin == lane.name) and self.fits(job, lane)
 
-    @staticmethod
-    def order(pending):
-        return sorted(pending, key=lambda j: -j.priority)   # stable: queue order within a priority
+    def order(self, pending):
+        """Highest priority first; within a priority queue (arrival) order, or with longest_first the slowest job first
+        (a job with no estimate counts as the median known one). Stable either way."""
+        if not self.longest_first:
+            return sorted(pending, key=lambda j: -j.priority)
+        known = [j.est_s for j in pending if j.est_s is not None]
+        mid = statistics.median(known) if known else 0.0
+        return sorted(pending, key=lambda j: (-j.priority, -(j.est_s if j.est_s is not None else mid)))
 
     def _est(self, job, pending):
         if job.est_s is not None:

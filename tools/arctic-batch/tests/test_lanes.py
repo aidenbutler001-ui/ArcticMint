@@ -166,6 +166,18 @@ class LiveQueueTests(unittest.TestCase):
         self.assertEqual((pd[pd.index("--geometry-res") + 1], pd[pd.index("--faces") + 1]), ("512", "150000"))
         self.assertEqual((pp[pp.index("--geometry-res") + 1], pp[pp.index("--faces") + 1]), ("1024", "400000"))
 
+    def test_batch_pin_applies_to_live_jobs(self):
+        import live_queue as lq
+        img = tb.make_imgs(os.makedirs(os.path.join(self.d, "i")) or os.path.join(self.d, "i"), ["a", "b", "c"])
+        first = os.path.join(self.d, "first"); os.makedirs(first)
+        os.replace(os.path.join(img, "a.png"), os.path.join(first, "a.png"))
+        lq.submit(self.q, os.path.join(img, "b.png")); lq.submit(self.q, os.path.join(img, "c.png")); lq.close(self.q)
+        out = os.path.join(self.d, "o")
+        self.assertEqual(tb.run(first, out, "--gen-lanes", "2", "--lane2-speed", "1.0", "--min-gain-s", "0", "--queue-dir", self.q,
+                                "--pin", "b=A", "--pin", "c=A"), 0)
+        r = {x["asset"]: x for x in tb.rows(out)[:-1]}
+        self.assertEqual((r["b"]["gen_lane"], r["c"]["gen_lane"]), ("A", "A"))
+
     def test_bad_job_options_are_refused(self):
         import live_queue as lq
         img = tb.make_imgs(os.makedirs(os.path.join(self.d, "i")) or os.path.join(self.d, "i"), ["x"])

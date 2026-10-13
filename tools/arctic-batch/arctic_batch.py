@@ -439,7 +439,7 @@ class Batch:
                 if jd.get("opts"):
                     self.job_opts[jd["name"]] = jd["opts"]
                 pend.append(dsp.Job(jd["name"], jd["est_s"] if jd["est_s"] is not None else est.get(jd["name"]),
-                                    float(jd["vram_gb"] if jd["vram_gb"] is not None else a.gen_need_gb), jd["priority"], jd["pin"]))
+                                    float(jd["vram_gb"] if jd["vram_gb"] is not None else a.gen_need_gb), jd["priority"], jd["pin"] or pins.get(jd["name"])))
                 self.log("%s: queued live (priority %d%s)" % (jd["name"], jd["priority"], ", pin " + jd["pin"] if jd["pin"] else ""))
 
         def pworker():

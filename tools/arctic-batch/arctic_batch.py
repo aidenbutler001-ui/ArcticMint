@@ -8,6 +8,8 @@ Post pool  : post-replay <dump> <glb> ...          (N workers, TRELLIS_POST_THRE
 --serial   : same commands, one asset at a time, post gets all threads (today's behaviour).
 --gpulock  : hold the cross-project GPU locks (tools/gpulock.py of Expiramental3d) for the whole batch.
 --phase-lock / ARCTIC_GPU_PHASE_LOCK : serialise the 3060 Ti's QEM (post-replay) and Cycles bake (finish.py).
+--gen-lanes 2 : OPT-IN second generation lane on the post GPU (3060 Ti) with a VRAM-aware dispatcher (dispatcher.py): jobs go to
+             the lane that lowers the projected makespan, post/finish are admitted by declared VRAM. Default 1 = unchanged.
 
 Subcommands: run (default), compare (masked-GLB hash compare of two output dirs).
 """
@@ -17,10 +19,11 @@ IMG_EXT = {".png", ".jpg", ".jpeg", ".webp"}
 CSV_FIELDS = ["asset", "status", "gen_s", "queue_wait_s", "post_s", "finish_wait_s", "finish_s", "asset_total_s",
               "dump_mb", "glb_sha256_masked", "error",
               "gen_start", "gen_end", "post_start", "post_end", "finish_start", "finish_end",
-              "dump_mode", "front_hash", "dump_ok", "warnings"]
+              "dump_mode", "front_hash", "dump_ok", "warnings", "gen_lane", "gen_gpu", "phase_gpu", "gate_wait_s"]
 TIME_KEYS = {"gen_start": "t_gen_start", "gen_end": "t_gen_end", "post_start": "t_post_start", "post_end": "t_post_end",
              "finish_start": "t_finish_start", "finish_end": "t_finish_end"}
 PHASE_LOCK_ENV = "ARCTIC_GPU_PHASE_LOCK"
+HERE = os.path.dirname(os.path.abspath(__file__))
 HASH_RE = re.compile(r"\[post-hash\]\s+(\S+)\s+V=(\d+)\s+F=(\d+)\s+verts=([0-9a-f]+)\s+faces=([0-9a-f]+)")
 # log patterns -> warning tokens; "GPU decimation unavailable" is decimate_qem.cpp's CPU-fallback message (15-25 min per prop)
 WARN_PATTERNS = [("cpu_qem", re.compile(r"GPU decimation unavailable")),
@@ -103,11 +106,20 @@ class Batch:
         self.stop = threading.Event()
         self.aborted = None
         self.finish = split_cmd(a.finish_cmd) if a.finish_cmd else None
+        self.gate = None            # dispatcher.VramGate, set by run_lanes (--gen-lanes 2)
+        self.lane_b_busy = 0
 
     # -- environments -------------------------------------------------------
-    def gen_env(self, dump=None):
+    def gen_env(self, dump=None, lane2=False):
         e = dict(os.environ)
         e["CUDA_DEVICE_ORDER"] = "PCI_BUS_ID"
+        if lane2:   # hide the other card completely, as the item 12 sheet did; --gpu is then 0 in the remapped view
+            e["CUDA_VISIBLE_DEVICES"] = str(self.a.lane2_gpu)
+            for kv in self.a.lane2_env:
+                k, _, v = kv.partition("=")
+                e[k] = v
+            for k in self.a.lane2_unset:   # TRELLIS_CONVNEXT_STREAM_ALL is tested for presence (getenv != nullptr): "=0" does not turn it off
+                e.pop(k, None)
         if self.a.hash:
             e["TRELLIS_POST_HASH"] = "1"
         if self.a.dump_mode == "raw":
@@ -125,7 +137,16 @@ class Batch:
             return 4.0 if self.a.post_workers == 1 else None
         return g if g > 0 else None
 
-    def post_env(self, threads):
+    def phase_lock_for(self, gpu):
+        """One phase-lock file per card: QEM and bake are serialised on the card they run on."""
+        pl = self.a.phase_lock
+        if not pl or gpu == self.a.post_gpu:
+            return pl
+        tag = "gpu%d.phase" % self.a.post_gpu
+        return pl[:-len(tag)] + "gpu%d.phase" % gpu if pl.endswith(tag) else "%s.gpu%d" % (pl, gpu)
+
+    def post_env(self, threads, gpu=None):
+        gpu = self.a.post_gpu if gpu is None else gpu
         e = dict(os.environ)
         e["CUDA_DEVICE_ORDER"] = "PCI_BUS_ID"
         e["TRELLIS_POST_THREADS"] = str(threads)
@@ -134,17 +155,17 @@ class Batch:
         if self.remesh_gib() is not None:
             e["TRELLIS_REMESH_MEM_GIB"] = "%g" % self.remesh_gib()
         if self.a.phase_lock:
-            e[PHASE_LOCK_ENV] = self.a.phase_lock
+            e[PHASE_LOCK_ENV] = self.phase_lock_for(gpu)
         # post-replay never runs ggml: without this its GPU QEM lands on CUDA device 0.
         # "-1" = no visible device -> decimate_qem falls back to the CPU path.
-        e["CUDA_VISIBLE_DEVICES"] = "-1" if self.a.qem == "cpu" else str(self.a.post_gpu)
+        e["CUDA_VISIBLE_DEVICES"] = "-1" if self.a.qem == "cpu" else str(gpu)
         return e
 
     # -- commands -----------------------------------------------------------
-    def gen_cmd(self, img, name, dump):
+    def gen_cmd(self, img, name, dump, lane2=False):
         a = self.a
         cmd = self.cli + ["-i", img, "-o", os.path.join(self.dumps, name + ".unused.glb"),
-                          "-m", a.models, "--res", str(a.res), "--gpu", str(a.gen_gpu),
+                          "-m", a.models, "--res", str(a.res), "--gpu", "0" if lane2 else str(a.gen_gpu),
                           "--seed", str(a.seed)]
         if a.dump_mode == "cleaned":
             cmd += ["--dump-post", dump]
@@ -200,20 +221,34 @@ class Batch:
             self.kill(p)
 
     # -- stages ---------------------------------------------------------------
-    def do_gen(self, img, name):
+    def do_gen(self, img, name, lane2=False):
         dump = os.path.join(self.dumps, name + ".bin")
         self.rm(dump)  # a stale dump from an earlier run must never pass for this run's output
-        t0 = time.time()
         glog = os.path.join(self.logs, name + ".gen.log")
-        rc = self.run_logged(self.gen_cmd(img, name, dump), self.gen_env(dump), glog, timeout=self.a.gen_timeout)
+        lane = ({"gen_lane": "B" if lane2 else "A", "gen_gpu": self.a.lane2_gpu if lane2 else self.a.gen_gpu}
+                if self.a.gen_lanes == 2 else {})
+        if lane2 and self.gate is not None:   # admission by declared VRAM: wait while post/finish hold the 3060 Ti
+            w0 = time.time()
+            if not self.gate.wait_admit(self.a.lane2_gpu, "gen:" + name, self.a.gen_need_gb, stop=self.stop):
+                self.fail(name, "gen", 0.0, "aborted while waiting for VRAM on the 3060 Ti", time.time())
+                return None
+            lane["gate_wait_s"] = time.time() - w0
+        t0 = time.time()
+        try:
+            rc = self.run_logged(self.gen_cmd(img, name, dump, lane2), self.gen_env(dump, lane2), glog, timeout=self.a.gen_timeout)
+        finally:
+            if lane2 and self.gate is not None:
+                self.gate.release(self.a.lane2_gpu, "gen:" + name)
         dt = time.time() - t0
         if rc != 0 or not os.path.isfile(dump):
             self.fail(name, "gen", dt, "trellis-cli exit %s" % rc, t0)
+            self.rows[name].update(lane)
+            self.rows[name]["_warn"] |= {"gen:" + w for w in scan_warnings(glog)}
             return None
         warn = {"gen:" + w for w in scan_warnings(glog)}
         self.rows[name] = {"asset": name, "gen_s": dt, "t_gen_start": t0, "t_gen_end": time.time(),
                            "dump_mb": os.path.getsize(dump) / 1048576.0, "dump_mode": self.a.dump_mode,
-                           "_warn": warn}
+                           "_warn": warn, **lane}
         return dump
 
     @staticmethod
@@ -232,8 +267,12 @@ class Batch:
         tmp = os.path.join(self.out, name + ".part.glb")  # written here, renamed only on success
         self.rm(glb); self.rm(tmp)
         plog = os.path.join(self.logs, name + ".post.log")
-        rc = self.run_logged(self.post_cmd(dump, tmp), self.post_env(threads), plog,
-                             timeout=self.a.post_timeout, low_priority=True)
+        gpu = self.place_phase(name, "post", self.a.post_need_gb, row)
+        try:
+            rc = self.run_logged(self.post_cmd(dump, tmp), self.post_env(threads, gpu), plog,
+                                 timeout=self.a.post_timeout, low_priority=True)
+        finally:
+            self.unplace_phase(gpu)
         row["post_s"] = time.time() - t_start
         self.read_hashes(name, plog)
         pw = scan_warnings(plog)
@@ -273,21 +312,25 @@ class Batch:
         cmd = [c.format(glb=glb, name=name, out=fdir) for c in self.finish]
         e = dict(os.environ)
         e["CUDA_DEVICE_ORDER"] = "PCI_BUS_ID"
-        e["CUDA_VISIBLE_DEVICES"] = str(self.a.post_gpu)
+        gpu = self.place_phase(name, "finish", self.a.finish_need_gb, row)
+        e["CUDA_VISIBLE_DEVICES"] = str(gpu)
         if self.a.phase_lock:
-            e[PHASE_LOCK_ENV] = self.a.phase_lock
+            e[PHASE_LOCK_ENV] = self.phase_lock_for(gpu)
         flog = os.path.join(self.logs, name + ".finish.log")
-        rc = self.run_logged(cmd, e, flog, timeout=self.a.finish_timeout, low_priority=True)
-        fw = scan_warnings(flog)
-        for attempt in range(self.a.finish_retries):  # an out-of-memory finish is a bake collision: wait, then try once more
-            if rc == 0 or "oom" not in fw or self.stop.is_set():
-                break
-            self.log("%s: finish hit an out-of-memory; retrying in %.0fs" % (name, self.a.finish_retry_wait))
-            row["_warn"].add("finish:oom_retried")
-            time.sleep(self.a.finish_retry_wait)
-            os.replace(flog, flog + ".try%d" % (attempt + 1))
+        try:
             rc = self.run_logged(cmd, e, flog, timeout=self.a.finish_timeout, low_priority=True)
             fw = scan_warnings(flog)
+            for attempt in range(self.a.finish_retries):  # an out-of-memory finish is a bake collision: wait, then try once more
+                if rc == 0 or "oom" not in fw or self.stop.is_set():
+                    break
+                self.log("%s: finish hit an out-of-memory; retrying in %.0fs" % (name, self.a.finish_retry_wait))
+                row["_warn"].add("finish:oom_retried")
+                time.sleep(self.a.finish_retry_wait)
+                os.replace(flog, flog + ".try%d" % (attempt + 1))
+                rc = self.run_logged(cmd, e, flog, timeout=self.a.finish_timeout, low_priority=True)
+                fw = scan_warnings(flog)
+        finally:
+            self.unplace_phase(gpu)
         row["_warn"] |= {"finish:" + w for w in fw}
         row["t_finish_end"] = time.time()
         row["finish_s"] = row["t_finish_end"] - t_start
@@ -317,6 +360,146 @@ class Batch:
     def log(self, msg):
         with self.lock:
             print("[%s] %s" % (time.strftime("%H:%M:%S"), msg), flush=True)
+
+    # -- VRAM placement (--gen-lanes 2 only; gate is None otherwise and everything runs on --post-gpu as before) ----------
+    def place_phase(self, name, kind, need, row):
+        """GPU for a post-replay / finish child. With no gate: --post-gpu, no waiting. With the gate: wait until the card has
+        the declared VRAM free (QEM and bake share ONE 'phase' slot because the phase lock serialises them). Placement
+        'flexible' may use the generation card when the 3060 Ti is full; after --gate-timeout the child starts anyway
+        (warning gate_timeout) so a wrong estimate can never deadlock the batch."""
+        if self.gate is None or self.a.qem == "cpu":
+            return self.a.post_gpu
+        cands = [self.a.post_gpu] + ([self.a.gen_gpu] if self.a.phase_placement == "flexible" else [])
+        need = max(self.a.post_need_gb, self.a.finish_need_gb)   # one slot for QEM and bake
+        t0 = time.time()
+        while not self.stop.is_set():
+            for g in cands:
+                if self.gate.acquire_shared(g, "phase", need):
+                    row["phase_gpu"] = g
+                    row["gate_wait_s"] = row.get("gate_wait_s", 0.0) + time.time() - t0
+                    return g
+            if time.time() - t0 > self.a.gate_timeout:
+                row["_warn"].add(kind + ":gate_timeout")
+                self.log("%s: %s waited %.0fs for VRAM on GPU %s; starting anyway" % (name, kind, time.time() - t0, cands))
+                row["phase_gpu"] = self.a.post_gpu
+                self.gate.acquire_shared(self.a.post_gpu, "phase", need, force=True)
+                return self.a.post_gpu
+            with self.gate.cond:
+                self.gate.cond.wait(2.0)
+        return self.a.post_gpu
+
+    def unplace_phase(self, gpu):
+        if self.gate is not None and self.a.qem != "cpu":
+            self.gate.release_shared(gpu, "phase")
+
+    def run_lanes(self, items, baseline=None):
+        """--gen-lanes 2: lane A (--gen-gpu) and lane B (--lane2-gpu) each pull from one pending list; Dispatcher.choose says
+        who takes what. A job whose generation runs out of memory on lane B is re-queued once, pinned to lane A."""
+        import dispatcher as dsp
+        a = self.a
+        est = {}
+        if a.est_from:
+            with open(a.est_from, encoding="utf-8-sig") as f:
+                est = {r["asset"]: float(r["gen_s"]) for r in csv.DictReader(f) if r.get("status") == "ok" and r.get("gen_s")}
+        vram = dict(kv.split("=", 1) for kv in a.job_vram)
+        pins = dict(kv.split("=", 1) for kv in a.pin)
+        caps = dict((int(k), float(v)) for k, v in (kv.split("=", 1) for kv in a.gpu_cap_gb.split(",")))
+        base = dict(baseline or {})
+        base.setdefault(a.gen_gpu, 1.5)
+        base.setdefault(a.lane2_gpu, 0.0)
+        la = dsp.Lane("A", a.gen_gpu, 1.0, caps.get(a.gen_gpu, 12.0), base[a.gen_gpu], primary=True)
+        lb = dsp.Lane("B", a.lane2_gpu, a.lane2_speed, caps.get(a.lane2_gpu, 8.0), base[a.lane2_gpu])
+        disp = dsp.Dispatcher([la, lb], a.vram_margin_gb, a.min_gain_s)
+        self.gate = dsp.VramGate({g: caps.get(g, 12.0) for g in (a.gen_gpu, a.lane2_gpu)}, base, a.vram_margin_gb)
+        img_of = dict((n, p) for p, n in items)
+        pend = [dsp.Job(n, est.get(n), float(vram.get(n, a.gen_need_gb)), pin=pins.get(n)) for _, n in items]
+        q = queue.Queue(maxsize=a.max_queue)
+        fq = queue.Queue(maxsize=a.finish_queue)
+        cond = threading.Condition()
+        npost, threads = a.post_workers, max(1, a.total_threads // a.post_workers)
+        retried = set()
+
+        def pworker():
+            while True:
+                job = q.get()
+                if job is None:
+                    return
+                try:
+                    glb = self.do_post(job[0], job[1], threads)
+                    if glb and self.finish:
+                        fq.put((job[0], glb))
+                except BaseException as e:
+                    self.rows[job[0]].update(status="post_failed", error=repr(e))
+                    self.log("%s: post error %r" % (job[0], e))
+
+        def fworker():
+            while True:
+                job = fq.get()
+                if job is None:
+                    return
+                try:
+                    self.do_finish(*job)
+                except BaseException as e:
+                    self.rows[job[0]].update(status="finish_failed", error=repr(e))
+                    self.log("%s: finish error %r" % (job[0], e))
+
+        def lane_worker(lane):
+            while True:
+                with cond:
+                    while True:
+                        if self.stop.is_set():
+                            return
+                        j = disp.choose(time.time(), lane, pend)
+                        if j is not None:
+                            pend.remove(j)
+                            lane.job, lane.started = j, time.time()
+                            lane.est_end = lane.started + (j.est_s / lane.speed if j.est_s else 0.0)
+                            break
+                        if not pend and all(l.job is None for l in disp.lanes if l is not lane):
+                            return
+                        cond.wait(2.0)
+                self.log("%s: generation -> lane %s (GPU %d)" % (j.name, lane.name, lane.gpu))
+                dump = self.do_gen(img_of[j.name], j.name, lane2=not lane.primary)
+                with cond:
+                    lane.job = None
+                    row = self.rows.get(j.name, {})
+                    if dump:
+                        disp.observe(lane, j, row.get("gen_s", 0.0))
+                    elif not lane.primary and j.name not in retried and "gen:oom" in row.get("_warn", ()):
+                        retried.add(j.name)   # does not fit the 3060 Ti: the 4070 takes it, nothing is lost
+                        pend.insert(0, dsp.Job(j.name, j.est_s, j.vram_gb, pin=la.name))
+                        self.log("%s: out of memory on lane B; re-queued on lane A" % j.name)
+                    cond.notify_all()
+                if dump:
+                    self.rows[j.name]["t_gen_end"] = time.time()
+                    q.put((j.name, dump))
+
+        ws = [threading.Thread(target=pworker, daemon=True) for _ in range(npost)]
+        fs = [threading.Thread(target=fworker, daemon=True) for _ in range(a.finish_workers if self.finish else 0)]
+        ls = [threading.Thread(target=lane_worker, args=(l,), daemon=True) for l in (la, lb)]
+        for w in ws + fs + ls:
+            w.start()
+        try:
+            for w in ls:
+                while w.is_alive():
+                    w.join(0.5)
+        except BaseException as e:
+            self.log("ABORT: %r; stopping children" % (e,))
+            self.abort()
+            self.aborted = e
+            with cond:
+                cond.notify_all()
+        finally:
+            for w in ls:
+                w.join(60)
+            for _ in ws:
+                q.put(None)
+            for w in ws:
+                w.join()
+            for _ in fs:
+                fq.put(None)
+            for w in fs:
+                w.join()
 
     # -- drivers --------------------------------------------------------------
     def run_serial(self, items):
@@ -510,6 +693,7 @@ class GpuLocks:
 
 
 def preflight(a, log=print):
+    """Returns {gpu: GB in use now} (the dispatcher's baseline), or None when nvidia-smi is unavailable."""
     """Refuse to start while something else holds VRAM we need: ComfyUI / llama-server on the 3060 Ti would push GPU
     QEM into its 15-25 min CPU fallback, a browser or Blender on the 4070 eats the generation's thin margin.
     nvidia-smi missing or failing = skipped with a line, never a failure."""
@@ -540,6 +724,7 @@ def preflight(a, log=print):
               "; ".join(bad), file=sys.stderr)
         raise SystemExit(4)
     log("preflight ok: " + ", ".join("GPU %d %.1f GB used" % (g, used[g] / 1024.0) for g in sorted(used)))
+    return {g: v / 1024.0 for g, v in used.items()}
 
 
 def cmd_run(a):
@@ -556,12 +741,14 @@ def cmd_run(a):
             a.phase_lock = locks.phase_path
         if a.phase_lock:  # include/phase_lock.h opens the file but does not create directories
             os.makedirs(os.path.dirname(os.path.abspath(a.phase_lock)), exist_ok=True)
-        if a.preflight:
-            preflight(a)
+        used = preflight(a) if a.preflight else None
         b = Batch(a)
         t0 = time.time()
         try:
-            (b.run_serial if a.serial else b.run_overlap)(items)
+            if a.gen_lanes == 2:
+                b.run_lanes(items, used)
+            else:
+                (b.run_serial if a.serial else b.run_overlap)(items)
         except BaseException as e:  # serial-mode Ctrl+C; overlap mode handles its own
             b.log("ABORT: %r" % (e,)); b.abort(); b.aborted = e
         wall = time.time() - t0
@@ -643,6 +830,30 @@ def build_parser():
     r.add_argument("--gen-gpu-max-gb", type=float, default=3.0, help="preflight: VRAM already used on the generation GPU")
     r.add_argument("--post-gpu-max-gb", type=float, default=1.5, help="preflight: VRAM already used on the post GPU")
     r.add_argument("--serial", action="store_true", help="gen then post, one asset at a time (A/B baseline)")
+    g = r.add_argument_group("second generation lane (OPT-IN; default --gen-lanes 1 changes nothing)")
+    g.add_argument("--gen-lanes", type=int, choices=[1, 2], default=1,
+                   help="2 = a second generation lane on --lane2-gpu (the 3060 Ti) next to --gen-gpu, scheduled by dispatcher.py")
+    g.add_argument("--lane2-gpu", type=int, default=0, help="PCI index of lane B; must equal --post-gpu (one GPU lock set)")
+    g.add_argument("--lane2-speed", type=float, default=0.5, help="starting belief: lane B speed relative to lane A (learned from the first job)")
+    g.add_argument("--lane2-env", action="append", default=[], metavar="KEY=VAL",
+                   help="extra environment for lane B generations only, e.g. TRELLIS_CONVNEXT_STREAM_GB=6")
+    g.add_argument("--lane2-unset", action="append", default=[], metavar="KEY",
+                   help="remove KEY from lane B's environment (streaming off = unset TRELLIS_CONVNEXT_STREAM_ALL; stages >= "
+                        "TRELLIS_CONVNEXT_STREAM_GB, default 2 GB, still stream)")
+    g.add_argument("--est-from", default="", metavar="batch.csv",
+                   help="gen_s per asset from an earlier batch.csv on lane A: the dispatcher's job-size estimates")
+    g.add_argument("--job-vram", action="append", default=[], metavar="NAME=GB", help="VRAM one generation needs (default --gen-need-gb)")
+    g.add_argument("--pin", action="append", default=[], metavar="NAME=A|B", help="force a job onto a lane")
+    g.add_argument("--min-gain-s", type=float, default=30.0, help="lane B takes a job only if the projected makespan drops by this much")
+    g.add_argument("--gen-need-gb", type=float, default=4.5, help="declared generation VRAM (item 11: 4.3 GB with TRELLIS_CONVNEXT_STREAM_ALL=1)")
+    g.add_argument("--post-need-gb", type=float, default=3.0, help="declared post-replay (QEM) VRAM on the 3060 Ti (item 11 peak 3.0 GB)")
+    g.add_argument("--finish-need-gb", type=float, default=2.0, help="declared finish (bake) VRAM; QEM and bake share one slot (phase lock)")
+    g.add_argument("--gpu-cap-gb", default="0=8,1=12", help="GPU index=capacity GB list")
+    g.add_argument("--vram-margin-gb", type=float, default=0.4, help="VRAM never handed out")
+    g.add_argument("--phase-placement", choices=["fixed", "flexible"], default="fixed",
+                   help="fixed = post/finish only on --post-gpu (wait for VRAM); flexible = may use the generation GPU when the 3060 Ti "
+                        "is full (needs the QEM cross-card check first)")
+    g.add_argument("--gate-timeout", type=float, default=900, help="seconds a post/finish waits for VRAM before it starts anyway")
     r.add_argument("--keep-dumps", action="store_true")
     c = sub.add_parser("compare", help="compare GLBs of two output dirs (timestamp masked)")
     c.add_argument("dir_a")
@@ -662,6 +873,8 @@ def main(argv=None):
         return 2
     if a.post_workers < 1 or a.max_queue < 1:
         raise SystemExit("--post-workers and --max-queue must be >= 1")
+    if a.gen_lanes == 2 and (a.serial or a.lane2_gpu != a.post_gpu or a.lane2_gpu == a.gen_gpu):
+        raise SystemExit("--gen-lanes 2 needs --lane2-gpu == --post-gpu (different from --gen-gpu) and no --serial")
     if a.dump_mode == "raw":
         bad = [t for t in split_cmd(a.replay_extra) if t in ("--no-remesh", "--fill-holes", "--no-weld", "--no-fill")]
         if bad:

@@ -10,7 +10,8 @@ import hashlib, os, sys, time, json
 mode, args = sys.argv[1], sys.argv[2:]
 GEN, POST = float(os.environ.get("FAKE_GEN_S", "0.4")), float(os.environ.get("FAKE_POST_S", "0.4"))
 ENV_KEYS = ("CUDA_VISIBLE_DEVICES", "TRELLIS_POST_THREADS", "CUDA_DEVICE_ORDER", "TRELLIS_POST_HASH",
-            "TRELLIS_DUMP_POST", "TRELLIS_STOP_AFTER_POST_DUMP", "TRELLIS_REMESH_MEM_GIB", "ARCTIC_GPU_PHASE_LOCK")
+            "TRELLIS_DUMP_POST", "TRELLIS_STOP_AFTER_POST_DUMP", "TRELLIS_REMESH_MEM_GIB", "ARCTIC_GPU_PHASE_LOCK",
+            "TRELLIS_CONVNEXT_STREAM_ALL", "X_TEST")
 
 
 def hash_line(stage, body):
@@ -23,6 +24,8 @@ if mode == "cli":
     dump = args[args.index("--dump-post") + 1] if "--dump-post" in args else os.environ["TRELLIS_DUMP_POST"]
     print("ARGS " + json.dumps({"argv": args, "env": {k: os.environ.get(k) for k in ENV_KEYS}}))
     if "bad" in os.path.basename(img): sys.exit(3)
+    if os.environ.get("FAKE_LANE_B_OOM") and os.environ.get("CUDA_VISIBLE_DEVICES") == "0":
+        print("RuntimeError: CUDA error: out of memory"); sys.exit(1)
     time.sleep(GEN)
     body = b"DUMP" + hashlib.sha256(open(img, "rb").read()).digest()
     open(dump, "wb").write(body)

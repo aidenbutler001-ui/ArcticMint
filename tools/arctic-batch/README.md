@@ -89,3 +89,30 @@ overlap faster than serial, identical masked GLBs, env (threads, `CUDA_VISIBLE_D
   `--finish-retries 0` turns it off.
 - **Run order = argument order** for files (directories are sorted): pass the longest generation first and the cheapest
   post + finish last.
+
+## Second generation lane (`--gen-lanes 2`, opt-in)
+
+Default `--gen-lanes 1` changes nothing. With `2`, the 3060 Ti (`--lane2-gpu`, must equal `--post-gpu`) generates as well as
+the 4070; `dispatcher.py` decides who takes which job and admits post/finish by declared VRAM. Design, acceptance tests and
+the go/no-go rule: Expiramental3d `research/notes/gen-lane2-design.md`.
+
+```
+python arctic_batch.py run <images...> -o out --gen-lanes 2 --est-from <earlier batch.csv> --dump-mode raw --hash --gpulock ...
+```
+
+- Lane B runs with `CUDA_VISIBLE_DEVICES=<lane2-gpu>` and `--gpu 0` (the 4070 is hidden). `--lane2-env KEY=VAL` adds and
+  `--lane2-unset KEY` removes env for lane B only. Streaming off on the 3060 Ti (no desktop) is `--lane2-unset TRELLIS_CONVNEXT_STREAM_ALL`
+  (the engine tests presence, so `=0` does NOT turn it off), plus `--lane2-env TRELLIS_CONVNEXT_STREAM_GB=6` to raise the 2 GB auto-stream threshold.
+- Lane B takes a job only when it lowers the projected makespan by `--min-gain-s` (a big job is never left for the slow lane at
+  the tail). `--est-from batch.csv` gives job sizes from an earlier run; without it sizes are unknown and the queue is split.
+  The lane's speed is learned from its first finished job (`--lane2-speed` is the starting belief).
+- VRAM: generation (`--gen-need-gb` 4.5) and the post/finish slot (`max(--post-need-gb 3.0, --finish-need-gb 2.0)`; QEM and bake
+  share one slot because the phase lock serialises them) must fit `--gpu-cap-gb` minus the baseline and `--vram-margin-gb`.
+  `--job-vram NAME=GB` marks a big prop (8.9 GB cabin-class stays on the 4070); `--pin NAME=A|B` forces a lane.
+  Post/finish wait for room; after `--gate-timeout` they start anyway and the row gets `post:gate_timeout`.
+- A generation that runs out of memory on lane B is re-queued once, pinned to lane A (`gen:oom` warning kept in `batch.csv`).
+- `batch.csv` gains `gen_lane, gen_gpu, phase_gpu, gate_wait_s`. `--phase-placement flexible` (post/finish may use the 4070 when
+  the 3060 Ti is full) stays off until the QEM cross-card check passes.
+- What-if without a GPU: `python dispatcher.py sim --csv batch.csv --speed 0.5` and `python dispatcher.py threshold --csv batch.csv`.
+- Locks are unchanged: the runner holds both GPU locks for the whole batch (Space Gothic stays out). Hand-off to Space Gothic
+  between jobs is a later step.

@@ -48,7 +48,7 @@ flowchart TD
     G --> H[UV-textured GLB]
 ```
 
-Dashed boxes are the optional prompt step described in [From a prompt to a model](#from-a-prompt-to-a-model); the engine
+The dashed arrows and the two top boxes are the optional prompt step described in [From a prompt to a model](#from-a-prompt-to-a-model); the engine
 itself starts at the RGB image.
 
 The three flow stages use a rectified-flow Euler sampler (12 steps by default) with classifier-free guidance. The

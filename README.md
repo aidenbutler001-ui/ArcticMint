@@ -115,7 +115,7 @@ repository; the tool's README lists the files ComfyUI needs. You can also skip i
 ## Showcase
 
 Four models made from a one-sentence prompt each: FLUX.2-klein-4B draws the picture, ArcticMint builds the textured model, Blender renders it. No hand modelling, no retouching.
-Click a render for the full image; the GLBs are in [`docs/showcase/models/`](docs/showcase/models/). Prompts, settings and timings are in [`docs/showcase/`](docs/showcase/README.md).
+Click a render to see the picture it was made from next to the result; the GLBs are in [`assets/showcase/`](assets/showcase/). Prompts, settings and timings are in [`docs/showcase/`](docs/showcase/README.md).
 
 | | |
 |---|---|

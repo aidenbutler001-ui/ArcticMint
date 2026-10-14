@@ -11,15 +11,15 @@ How each one was made:
 2. **Model.** `trellis-cli` (this repository) turned the kept picture into a UV-textured PBR GLB: `--res 1024 --steps 24 --tex-res 1024 --atlas 4096 --faces 150000 --tex-reroll 2 --seed 1`.
    `--tex-reroll 2` redoes only the colour step if its brightness is far from the picture's; the mushrooms needed one redo and the other three kept their first colour pass. Each took 11 to 14 minutes (see the table).
 3. **Render.** Blender 4.5 (Cycles, 256 samples, AgX) on a plain grey backdrop with three area lights. The model is only centred, scaled and set on the floor; nothing is edited.
-4. **Repository copy.** The GLBs in [`models/`](models/) are the engine output run through a collapse decimation to 80,000 faces with the texture atlas shrunk from 4096 to 2048 px
+4. **Repository copy.** The GLBs in [`assets/showcase/`](../../assets/showcase/) are the engine output run through a collapse decimation to 80,000 faces with the texture atlas shrunk from 4096 to 2048 px
    (WebP), to keep the repository light. The renders come from the full-size output.
 
 | | Prompt (before the framing words) | Picture seed | Engine time | Files |
 |---|---|---|---|---|
-| Diving helmet | antique brass deep-sea diving helmet with riveted seams, round glass portholes and a bolted collar, aged patina, hard-surface prop, game asset | 11 | 13 min | [render](diving-helmet.jpg), [picture to model](diving-helmet-picture-to-model.jpg), [GLB](models/diving-helmet.glb) |
-| Stone lantern | mossy carved stone garden lantern on a square base, weathered granite with green moss and lichen, chunky simple forms, game asset | 33 | 11 min | [render](stone-lantern.jpg), [picture to model](stone-lantern-picture-to-model.jpg), [GLB](models/stone-lantern.glb) |
-| Mushrooms | cluster of three fat forest mushrooms with warm brown caps and cream stems, tiny moss at the base, stylized organic prop, game asset | 11 | 14 min | [render](mushrooms.jpg), [picture to model](mushrooms-picture-to-model.jpg), [GLB](models/mushrooms.glb) |
-| Teapot | glazed ceramic teapot with a hand-painted blue floral pattern, curved spout and handle, small lid knob, game asset | 22 | 12 min | [render](teapot.jpg), [picture to model](teapot-picture-to-model.jpg), [GLB](models/teapot.glb) |
+| Diving helmet | antique brass deep-sea diving helmet with riveted seams, round glass portholes and a bolted collar, aged patina, hard-surface prop, game asset | 11 | 13 min | [render](diving-helmet.jpg), [picture to model](diving-helmet-picture-to-model.jpg), [GLB](../../assets/showcase/diving-helmet/diving-helmet.glb) |
+| Stone lantern | mossy carved stone garden lantern on a square base, weathered granite with green moss and lichen, chunky simple forms, game asset | 33 | 11 min | [render](stone-lantern.jpg), [picture to model](stone-lantern-picture-to-model.jpg), [GLB](../../assets/showcase/stone-lantern/stone-lantern.glb) |
+| Mushrooms | cluster of three fat forest mushrooms with warm brown caps and cream stems, tiny moss at the base, stylized organic prop, game asset | 11 | 14 min | [render](mushrooms.jpg), [picture to model](mushrooms-picture-to-model.jpg), [GLB](../../assets/showcase/mushrooms/mushrooms.glb) |
+| Teapot | glazed ceramic teapot with a hand-painted blue floral pattern, curved spout and handle, small lid knob, game asset | 22 | 12 min | [render](teapot.jpg), [picture to model](teapot-picture-to-model.jpg), [GLB](../../assets/showcase/teapot/teapot.glb) |
 
 ## What to expect
 

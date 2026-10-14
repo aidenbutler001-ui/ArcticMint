@@ -112,6 +112,16 @@ Two image models are wired up, FLUX.2-klein-4B and Z-Image-Turbo (both Apache-2.
 repository; the tool's README lists the files ComfyUI needs. You can also skip it and feed the engine any picture, as in
 [Quick start](#quick-start).
 
+## Showcase
+
+Four models made from a one-sentence prompt each: FLUX.2-klein-4B draws the picture, ArcticMint builds the textured model, Blender renders it. No hand modelling, no retouching.
+Click a render to see the picture it was made from next to the result; the GLBs are in [`assets/showcase/`](assets/showcase/). Prompts, settings and timings are in [`docs/showcase/`](docs/showcase/README.md).
+
+| | |
+|---|---|
+| [![Antique brass diving helmet](docs/showcase/diving-helmet.jpg)](docs/showcase/diving-helmet-picture-to-model.jpg)<br>**Diving helmet** | [![Mossy stone lantern](docs/showcase/stone-lantern.jpg)](docs/showcase/stone-lantern-picture-to-model.jpg)<br>**Stone lantern** |
+| [![Forest mushrooms](docs/showcase/mushrooms.jpg)](docs/showcase/mushrooms-picture-to-model.jpg)<br>**Mushrooms** | [![Glazed ceramic teapot](docs/showcase/teapot.jpg)](docs/showcase/teapot-picture-to-model.jpg)<br>**Teapot** |
+
 ## What ArcticMint adds
 
 - **Multithreaded CPU post-processing** (`src/post_parallel.*`, `src/post_mesh.cpp`). Weld, clean, small-component removal,

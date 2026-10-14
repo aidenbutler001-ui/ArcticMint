@@ -1,3 +1,5 @@
+<p align="center"><img src="assets/logo.png" alt="ArcticMint logo: a small mint plant on a piece of arctic ice" width="240"></p>
+
 <h1 align="center">ArcticMint</h1>
 
 <p align="center"><b>Image in, textured 3D model out, all in native C++.</b><br>
@@ -35,16 +37,10 @@ cards busy: a multithreaded CPU post-processing stage, a parallel batch runner, 
 
 ## Pipeline
 
-```mermaid
-flowchart TD
-    A[RGB image] --> B[BiRefNet background removal]
-    B --> C[DINOv3 ViT-L/16 conditioning tokens]
-    C --> D["1. Sparse-structure flow DiT<br/>(dense 16^3) -> 64^3 occupancy"]
-    D --> E["2. Shape SLAT flow DiT<br/>-> shape decoder -> dual-grid mesh"]
-    E --> F["3. Texture SLAT flow DiT<br/>-> 6-channel PBR per voxel"]
-    F --> G["CPU post: weld, hole fill, dual-contouring remesh,<br/>QEM decimation, xatlas UVs, PBR bake"]
-    G --> H[UV-textured GLB]
-```
+<p align="center"><img src="assets/pipeline.svg" alt="ArcticMint pipeline: text prompt, picture from ComfyUI, then BiRefNet, DINOv3, three flow stages, CPU post-processing, GLB" width="100%"></p>
+
+The green boxes are the [prompt-to-model](#from-a-prompt-to-a-model) tool. You can skip them and start the engine from any
+picture; the engine itself begins at the RGB image.
 
 The three flow stages use a rectified-flow Euler sampler (12 steps by default) with classifier-free guidance. The
 default is the **1024 cascade**: a low-resolution `flow_512` pass, an upsample, then a high-resolution `flow_1024` pass.

@@ -640,9 +640,20 @@ int trellis_run(const trellis::TrellisParams& cfg) {
                          trellis::FlowCond(tcond, pix ? pc.proj.data()     : nullptr),
                          trellis::FlowCond(tneg,  nullptr), sp);  // [32,tN]
             delete run; m.free();
+            const bool tex_stats = std::getenv("TRELLIS_TEX_STATS") != nullptr;
+            if (tex_stats) {
+                slat_stats("tex flow out (normalised)", texlat);
+                slat_stats("tex concat shape slat (normalised)", tslat);
+                std::vector<float> cs(texlat.size() / 32);      // channel 0 only, for a quick spatial look
+                for (size_t n = 0; n < cs.size(); ++n) cs[n] = texlat[32 * n];
+                slat_stats("tex flow out ch0", cs);
+            }
             for (int n = 0; n < tN; ++n) for (int c = 0; c < 32; ++c) texlat[(size_t)c + 32*n] = texlat[(size_t)c + 32*n]*TEX_STD[c] + TEX_MEAN[c];
             trellis::Model decoder = trellis::Model::load(M + "/tex_dec.gguf", gpu);
             vector<float> pbr = trellis::tex_decode(decoder, texlat, tcoords, tsubs); decoder.free();
+            if (tex_stats) {
+                for (int k = 0; k < 6; ++k) { std::vector<float> ch(pbr.size() / 6); for (size_t i = 0; i < ch.size(); ++i) ch[i] = pbr[(size_t)k + 6*i]; char tg[48]; snprintf(tg, sizeof tg, "tex decoded raw ch%d", k); slat_stats(tg, ch); }
+            }
             vector<float> decoded((size_t)Mv * 6);
             auto cl = [](float v){ return v < 0 ? 0.f : (v > 1 ? 1.f : v); };
             for (int i = 0; i < Mv; ++i)
@@ -650,8 +661,42 @@ int trellis_run(const trellis::TrellisParams& cfg) {
                     decoded[(size_t)i*6 + k] = cl(pbr[(size_t)k + 6*i] * 0.5f + 0.5f);
             return decoded;
         };
-        const auto texture_rng = rng;
+        auto texture_rng = rng;
         pbr6 = decode_texture(mixed);
+        // Opt-in colour check (--tex-reroll N / TRELLIS_TEX_REROLL=N). The texture flow runs without guidance and
+        // sometimes lands on a dark-brown mode whatever the picture says (also seen in the reference ComfyUI). Compare
+        // the decoded base colour's brightness with the picture's foreground and redo only this stage with a fresh
+        // noise draw while it is far off; keep the closest. Off by default, so output is unchanged.
+        int tex_reroll = cfg.tex_reroll;
+        if (tex_reroll <= 0) if (const char* e = std::getenv("TRELLIS_TEX_REROLL")) tex_reroll = std::max(0, std::atoi(e));
+        if (tex_reroll > 0 && cut_sz > 0 && cutout.size() == (size_t)cut_sz * cut_sz * 4) {
+            double fy = 0, fa = 0;   // premultiplied RGBA: sum(rgb) / sum(alpha) over mostly-opaque pixels
+            for (size_t i = 0; i < (size_t)cut_sz * cut_sz; ++i) {
+                const unsigned char* q = &cutout[4 * i];
+                if (q[3] < 128) continue;
+                fy += (0.2126 * q[0] + 0.7152 * q[1] + 0.0722 * q[2]) / 255.0; fa += q[3] / 255.0;
+            }
+            const double pic_y = fa > 0 ? fy / fa : 0.0;
+            auto base_y = [](const vector<float>& p6) {
+                double y = 0; const size_t n = p6.size() / 6;
+                for (size_t i = 0; i < n; ++i) y += 0.2126 * p6[6*i] + 0.7152 * p6[6*i + 1] + 0.0722 * p6[6*i + 2];
+                return n ? y / n : 0.0;
+            };
+            auto score = [&](double y) { return std::fabs(std::log((y + 0.02) / (pic_y + 0.02))); };
+            const double lo = 0.6, hi = 1.5;   // accept window for decoded / picture brightness
+            double y = base_y(pbr6), best_s = score(y);
+            auto best_rng = texture_rng;
+            printf("      [tex-reroll] picture brightness %.3f, attempt 0 decoded %.3f (ratio %.2f)\n", pic_y, y, y / (pic_y + 1e-6));
+            for (int att = 1; att <= tex_reroll && !(y / (pic_y + 1e-6) >= lo && y / (pic_y + 1e-6) <= hi); ++att) {
+                const auto rng_before = rng;
+                vector<float> cand = decode_texture(mixed);
+                y = base_y(cand);
+                printf("      [tex-reroll] attempt %d decoded %.3f (ratio %.2f)\n", att, y, y / (pic_y + 1e-6));
+                if (score(y) < best_s) { best_s = score(y); pbr6.swap(cand); best_rng = rng_before; }
+            }
+            texture_rng = best_rng;
+            printf("      [tex-reroll] kept brightness %.3f (ratio %.2f)\n", base_y(pbr6), base_y(pbr6) / (pic_y + 1e-6));
+        }
         const int Mv = (int)pbr_coords->size();
         colors.resize((size_t)Mv * 3);
         for (int i = 0; i < Mv; ++i)

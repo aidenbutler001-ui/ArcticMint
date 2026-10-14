@@ -158,6 +158,7 @@ void print_usage(const char* argv0, bool server) {
         "      --retopo-dual-pbr  decode 1024 PBR for quad export with 512 primary PBR\n"
         "      --retopo-workdir DIR   large intermediates (default .codex/retopo/runs)\n"
         "      --f32               f32 sparse-conv compute\n"
+        "      --tex-reroll N      colour check: redo only the texture stage up to N times when its brightness is far off the picture's (default 0 = off)\n"
         "      --fa-fast           force F16 K/V + fast accumulation (default on HTP)\n"
         "      --fa-f32            use BF16 K/V + F32 accumulation (HTP opt-out)\n"
         "      --no-fa             disable FlashAttention\n"
@@ -248,6 +249,9 @@ bool parse_args(int argc, char** argv, TrellisParams& p) {
         else if (a == "--dump-bg")              { p.dump_bg = true; }
         else if (a == "--bg-only")              { p.bg_only = true; p.dump_bg = true; }
         else if (a == "--ss-only")              { p.ss_only = true; }
+        else if (a == "--tex-reroll")           { const char* v = need(a.c_str()); if (!v) return false;
+                                                  if (!integer(v, p.tex_reroll) || p.tex_reroll < 0 || p.tex_reroll > 16) {
+                                                      fprintf(stderr, "[trellis] --tex-reroll must be 0..16\n"); return false; } }
         else if (a == "--ss-seeds")             { const char* v = need(a.c_str()); if (!v) return false;
                                                   if (!integer(v, p.ss_seeds)) return false;
                                                   if (p.ss_seeds < 1 || p.ss_seeds > 4096) {

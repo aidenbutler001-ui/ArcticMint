@@ -102,6 +102,8 @@ struct TrellisParams {
                                 // same layout as the TRELLIS_DUMP_POST debug env)
     bool bg_only = false;       // background removal only: write the cutout and skip the rest
     bool ss_only = false;       // stop after the sparse-structure stage: write <out>_ss.json (voxel bbox per seed), no mesh
+    int  tex_reroll = -1;       // colour check: redo only the texture stage up to N more times when the decoded
+                                // base colour is far darker/lighter than the picture (-1 = not given: env TRELLIS_TEX_REROLL decides, default off; 0 = off)
     int  ss_seeds = 1;          // with --ss-only: seeds seed, seed+1, ... seed+N-1 share one preprocess + DINOv3 pass
 
     int  steps    = 0;          // flow sampler steps; 0 = model default (12). Lowering this

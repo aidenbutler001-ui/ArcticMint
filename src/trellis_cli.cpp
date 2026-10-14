@@ -26,6 +26,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstdint>
+#include <cstring>
 #include <random>
 #include <vector>
 #include <string>

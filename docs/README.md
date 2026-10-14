@@ -33,4 +33,4 @@ The optional `--model pixal3d` backend and its known gaps.
 ## Inherited, untested here
 
 [`../app/`](../app/README.md) (desktop app), [`../install/`](../install/portable-readme.txt) (installers, portable build) and
-[`../assets/showcase/`](../assets/showcase/README.md) come from upstream.
+[`../assets/upstream-examples/`](../assets/upstream-examples/README.md) come from upstream.

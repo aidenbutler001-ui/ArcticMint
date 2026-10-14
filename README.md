@@ -98,6 +98,16 @@ the source checkpoints yourself with [`tools/convert.py`](tools/convert.py) (det
 changes are tested. `trellis-server` keeps the engine resident behind a small HTTP API (`POST /generate`, `GET /health`).
 `--model pixal3d` runs the [Pixal3D](docs/pixal3d/README.md) fine-tune on the same engine.
 
+## From a prompt to a model
+
+The engine itself reads a picture, not text. To go from a prompt to a 3D model, put any text-to-image model in front of it:
+
+1. Generate a clean, single-object picture from your prompt (an isolated subject on a plain background works best).
+2. Run it through `trellis-cli -i picture.png -o model.glb -m /path/to/gguf` as in [Quick start](#quick-start).
+
+We do this on our own machine with a local text-to-image model feeding the same engine, so a sentence goes in and a
+textured GLB comes out. That prompt step is not part of this repository.
+
 ## What ArcticMint adds
 
 - **Multithreaded CPU post-processing** (`src/post_parallel.*`, `src/post_mesh.cpp`). Weld, clean, small-component removal,

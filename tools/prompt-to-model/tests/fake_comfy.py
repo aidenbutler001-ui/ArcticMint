@@ -55,6 +55,7 @@ class FakeComfy:
         self.lock = threading.Lock()
         self.freed = 0
         self.interrupted = 0
+        self.deleted = []
         me = self
 
         class H(BaseHTTPRequestHandler):
@@ -100,6 +101,9 @@ class FakeComfy:
                     return self._send(code, out)
                 if self.path == "/free":
                     me.freed += 1
+                    return self._send(200, {})
+                if self.path == "/queue":
+                    me.deleted += body.get("delete", [])
                     return self._send(200, {})
                 if self.path == "/interrupt":
                     me.interrupted += 1

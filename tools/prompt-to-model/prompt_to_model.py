@@ -9,12 +9,17 @@ prompt. Step 2 hands that picture to trellis-cli, which writes the GLB. The pict
 
   --picture-only        stop after the picture(s); --count N makes N seeds to choose from, then rerun with --image PICTURE
   --image PICTURE       skip step 1 and run step 2 on a picture you picked
+
+Every output is named NAME_s<seed>.png / .glb / .json, so another seed never replaces an earlier run. A run that would overwrite a file
+stops before doing any work unless you pass --force.
 """
 import argparse
+import hashlib
 import json
 import os
 import re
 import shlex
+import shutil
 import subprocess
 import sys
 import time
@@ -38,9 +43,20 @@ def split_cmd(s):
     return toks
 
 
+RESERVED = {"con", "prn", "aux", "nul"} | {"com%d" % i for i in range(1, 10)} | {"lpt%d" % i for i in range(1, 10)}   # Windows device names
+
+
 def slug(text, limit=40):
+    """A safe file name stem: ascii letters, digits and underscores. Text with none (a non-English prompt) becomes model_<hash>."""
     s = re.sub(r"[^a-z0-9]+", "_", text.lower()).strip("_")[:limit].strip("_")
-    return s or "model"
+    if not s:
+        s = "model_" + hashlib.sha1(text.encode("utf-8")).hexdigest()[:6]
+    return s + "_" if s in RESERVED else s
+
+
+def engine_cmd(cli):
+    """--cli is one program path (possibly with spaces, unquoted by PowerShell) or a command line such as 'python fake.py'."""
+    return [cli] if os.path.isfile(cli) or shutil.which(cli) else split_cmd(cli)
 
 
 def final_prompt(prompt, style):
@@ -59,8 +75,13 @@ def make_picture(client, model, prompt, seed, path, size, workflow_dir, timeout)
         f.write(client.fetch(imgs[0]))
 
 
+TIMEOUT = "timeout"
+
+
 def run_engine(cmd, picture, glb, models, seed, gpu, extra, timeout):
-    args = cmd + ["-i", picture, "-o", glb, "-m", models, "--seed", str(seed)] + (["--gpu", str(gpu)] if gpu is not None else []) + extra
+    """-> the exit code, TIMEOUT, or None when the program cannot be started."""
+    # --require-gpu: a wrong --gpu must fail fast, not fall back to the CPU path for the whole timeout
+    args = cmd + ["-i", picture, "-o", glb, "-m", models, "--seed", str(seed)] + (["--gpu", str(gpu), "--require-gpu"] if gpu is not None else []) + extra
     env = dict(os.environ)
     if gpu is not None:
         env["CUDA_DEVICE_ORDER"] = "PCI_BUS_ID"       # --gpu then means the nvidia-smi index
@@ -68,10 +89,10 @@ def run_engine(cmd, picture, glb, models, seed, gpu, extra, timeout):
     try:
         return subprocess.run(args, env=env, timeout=timeout or None).returncode
     except subprocess.TimeoutExpired:
-        return -1
+        return TIMEOUT
     except OSError as e:
         print("error: cannot start the engine (%s): %s" % (cmd[0], e), file=sys.stderr)
-        return -2
+        return None
 
 
 def main(argv=None):
@@ -92,6 +113,7 @@ def main(argv=None):
     ap.add_argument("--image", help="skip the picture step and use this file")
     ap.add_argument("--gpu", type=int, help="3D engine GPU (nvidia-smi index); sets CUDA_DEVICE_ORDER=PCI_BUS_ID")
     ap.add_argument("--engine-args", default="", help="extra trellis-cli arguments, e.g. '--res 1024 --steps 24'")
+    ap.add_argument("--force", action="store_true", help="overwrite outputs of an earlier run with the same name and seed")
     ap.add_argument("--picture-timeout", type=float, default=900, help="seconds to wait for ComfyUI")
     ap.add_argument("--engine-timeout", type=float, default=3600, help="seconds before the engine is killed (0 = never)")
     a = ap.parse_args(argv)
@@ -108,18 +130,32 @@ def main(argv=None):
         ap.error("--count %d makes %d pictures; add --picture-only, look at them, then rerun with --image and --seed" % (a.count, a.count))
     if not a.picture_only and not a.models:
         ap.error("--models is needed for the 3D step")
-    if a.size < 256:
-        ap.error("--size is at least 256")
-
-    os.makedirs(a.out, exist_ok=True)
-    name = a.name or slug(a.prompt or os.path.splitext(os.path.basename(a.image))[0])
-    record = {"prompt": a.prompt, "style": a.style, "seed": a.seed, "image_model": a.image_model if not a.image else None, "pictures": []}
-    t0 = time.time()
+    if a.size < 256 or a.size % 16:
+        ap.error("--size is at least 256 and a multiple of 16")
 
     if a.image:
         if not os.path.isfile(a.image):
             print("error: no such picture: %s" % a.image, file=sys.stderr)
             return 1
+        base = re.sub(r"_s\d+$", "", slug(os.path.splitext(os.path.basename(a.image))[0]))
+    else:
+        base = slug(a.prompt)
+    name = slug(a.name) if a.name else base
+    stem = "%s_s%d" % (name, a.seed)
+    glb, info = (os.path.join(a.out, stem + ext) for ext in (".glb", ".json"))
+    pics = [] if a.image else [os.path.join(a.out, "%s_s%d.png" % (name, a.seed + i)) for i in range(a.count)]
+    targets = pics + ([glb] if not a.picture_only else []) + [info]
+    clash = [t for t in targets if os.path.exists(t)]
+    if clash and not a.force:
+        print("error: would overwrite %s. Pick another --seed or --name, or pass --force." % ", ".join(clash), file=sys.stderr)
+        return 1
+    os.makedirs(a.out, exist_ok=True)
+    for t in clash:                       # --force: a failed run must not leave an old result next to the new record
+        os.remove(t)
+    record = {"prompt": a.prompt, "style": a.style, "seed": a.seed, "image_model": a.image_model if not a.image else None, "pictures": []}
+    t0 = time.time()
+
+    if a.image:
         pictures = [a.image]
     else:
         text = final_prompt(a.prompt, a.style)
@@ -130,8 +166,7 @@ def main(argv=None):
             return 1
         pictures = []
         try:
-            for i in range(a.count):
-                path = os.path.join(a.out, "%s_s%d.png" % (name, a.seed + i))
+            for i, path in enumerate(pics):
                 print("picture %d/%d: %s seed %d" % (i + 1, a.count, comfy_client.IMAGE_MODELS[a.image_model]["label"], a.seed + i), flush=True)
                 make_picture(client, a.image_model, text, a.seed + i, path, a.size, a.workflows, a.picture_timeout)
                 pictures.append(path)
@@ -139,23 +174,24 @@ def main(argv=None):
             print("error: %s" % e, file=sys.stderr)
             return 1
         finally:
-            client.free()               # the engine gets the card back
+            client.free()               # ask ComfyUI to hand the card back
     record["pictures"] = pictures
     record["picture_s"] = round(time.time() - t0, 1)
 
     rc = 0
     if not a.picture_only:
-        glb = os.path.join(a.out, name + ".glb")
         t1 = time.time()
-        rc = run_engine(split_cmd(a.cli), pictures[0], glb, a.models, a.seed, a.gpu, split_cmd(a.engine_args) if a.engine_args else [],
+        rc = run_engine(engine_cmd(a.cli), pictures[0], glb, a.models, a.seed, a.gpu, split_cmd(a.engine_args) if a.engine_args else [],
                         a.engine_timeout)
         record.update(glb=glb if rc == 0 else None, engine_exit=rc, engine_s=round(time.time() - t1, 1))
         if rc == 0 and not os.path.isfile(glb):
             print("error: the engine exited 0 but wrote no %s" % glb, file=sys.stderr)
-            rc = record["engine_exit"] = -3
-        if rc != 0:
+            rc = record["engine_exit"] = "no output"
+        if rc == TIMEOUT:
+            print("error: the engine ran longer than %g s and was killed (--engine-timeout)" % a.engine_timeout, file=sys.stderr)
+        elif rc is not None and rc != 0:
             print("error: the 3D step failed (exit %s)" % rc, file=sys.stderr)
-    with open(os.path.join(a.out, name + ".json"), "w", encoding="utf-8") as f:
+    with open(info, "w", encoding="utf-8") as f:
         json.dump(record, f, indent=1)
         f.write("\n")
     if rc == 0:

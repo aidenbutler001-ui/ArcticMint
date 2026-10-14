@@ -4,6 +4,7 @@ Flow: POST /prompt -> poll /history/<id> -> GET /view -> POST /free (unload the 
 Talks to a ComfyUI you already run (default http://127.0.0.1:8188); nothing here goes to the internet.
 """
 import copy
+import http.client
 import json
 import os
 import time
@@ -23,6 +24,7 @@ IMAGE_MODELS = {
                "size": [("13", "width", "height")]},
 }
 OUTPUT_PREFIX = "prompt_to_model"
+LOCAL_HOSTS = ("127.0.0.1", "localhost", "::1", "[::1]")
 
 
 class ComfyError(Exception):
@@ -69,15 +71,18 @@ class Comfy:
         self.url = url.rstrip("/")
         self.timeout = timeout
         self.client_id = uuid.uuid4().hex
+        host = (urllib.parse.urlsplit(self.url).hostname or "").lower()
+        # a system proxy (HTTP_PROXY) must not catch calls to the ComfyUI on this machine
+        self.opener = urllib.request.build_opener(urllib.request.ProxyHandler({})) if host in LOCAL_HOSTS else urllib.request.build_opener()
 
     def _open(self, path, data=None, timeout=None):
         req = urllib.request.Request(self.url + path, data=data, headers={"Content-Type": "application/json"} if data is not None else {})
         try:
-            with urllib.request.urlopen(req, timeout=timeout or self.timeout) as r:
+            with self.opener.open(req, timeout=timeout or self.timeout) as r:
                 return r.read()
         except urllib.error.HTTPError as e:
             raise ComfyError(self._explain(e.code, e.read()))
-        except (urllib.error.URLError, OSError, ValueError) as e:
+        except (urllib.error.URLError, OSError, ValueError, http.client.HTTPException) as e:
             raise ComfyError("ComfyUI is not reachable at %s (%s)" % (self.url, getattr(e, "reason", e)))
 
     @staticmethod
@@ -95,11 +100,18 @@ class Comfy:
         return "ComfyUI rejected the request: %s%s" % (msg, "; " + "; ".join(details[:3]) if details else "")
 
     def get(self, path, timeout=None):
-        return json.loads(self._open(path, timeout=timeout) or b"null")
+        raw = self._open(path, timeout=timeout)
+        try:
+            return json.loads(raw or b"null")
+        except ValueError:
+            raise ComfyError("ComfyUI answered %s with something that is not JSON" % path)
 
     def post(self, path, obj, timeout=None):
         raw = self._open(path, json.dumps(obj).encode(), timeout=timeout)
-        return json.loads(raw) if raw.strip() else {}
+        try:
+            return json.loads(raw) if raw.strip() else {}
+        except ValueError:
+            raise ComfyError("ComfyUI answered %s with something that is not JSON" % path)
 
     def alive(self):
         try:
@@ -143,7 +155,7 @@ class Comfy:
         t0 = time.time()
         while True:
             if time.time() - t0 > timeout:
-                self.interrupt()
+                self.cancel(prompt_id)
                 raise ComfyError("image generation took longer than %d s; interrupted" % timeout)
             ent = (self.get("/history/" + prompt_id) or {}).get(prompt_id)
             if ent:
@@ -164,14 +176,22 @@ class Comfy:
         return self._open("/view?" + q, timeout=60)
 
     def free(self):
-        """Unload models and free VRAM so the card is really free for the 3D engine."""
+        """Ask ComfyUI to unload its models and free VRAM. ComfyUI does this on its next loop, not before the call returns."""
         try:
             self._open("/free", json.dumps({"unload_models": True, "free_memory": True}).encode(), timeout=15)
         except ComfyError:
             pass
 
-    def interrupt(self):
+    def interrupt(self, prompt_id=None):
         try:
-            self._open("/interrupt", b"{}", timeout=5)
+            self._open("/interrupt", json.dumps({"prompt_id": prompt_id} if prompt_id else {}).encode(), timeout=5)
+        except ComfyError:
+            pass
+
+    def cancel(self, prompt_id):
+        """Stop this job whether it is running (interrupt) or still waiting in the queue (delete)."""
+        self.interrupt(prompt_id)
+        try:
+            self._open("/queue", json.dumps({"delete": [prompt_id]}).encode(), timeout=5)
         except ComfyError:
             pass

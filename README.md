@@ -105,8 +105,7 @@ text-to-image model in front of it, so a sentence goes in and a textured GLB com
 library only) that asks a ComfyUI you already run for a single-object picture, then hands that picture to `trellis-cli`:
 
 ```bash
-python tools/prompt-to-model/prompt_to_model.py "a weathered wooden treasure chest with iron bands" \
-  --models /path/to/gguf --cli build/trellis-cli --comfy-url http://127.0.0.1:8188 -o out/chest
+python tools/prompt-to-model/prompt_to_model.py "a weathered wooden treasure chest with iron bands" --models /path/to/gguf --cli build/trellis-cli -o out/chest
 ```
 
 Two image models are wired up, FLUX.2-klein-4B and Z-Image-Turbo (both Apache-2.0). Their weights are not part of this
@@ -132,7 +131,7 @@ repository; the tool's README lists the files ComfyUI needs. You can also skip i
 - **Prompt-to-model command** ([`tools/prompt-to-model/`](tools/prompt-to-model/README.md), Python standard library only). Makes
   the picture from a text prompt through a local ComfyUI (FLUX.2-klein-4B or Z-Image-Turbo), then runs `trellis-cli` on it, and
   keeps the picture, the GLB and a small JSON record together. `--picture-only --count N` makes several seeds to choose from.
-  Tested against a fake ComfyUI and a fake engine; a real run on a GPU machine is still pending.
+  Tested against a fake ComfyUI and a fake engine; not yet run on real hardware.
 - **Draft-then-refine seed picking** (opt-in, [`tools/arctic-batch/draft_refine.py`](tools/arctic-batch/draft_refine.py)). For each
   prop it queues cheap res-512 drafts of several candidate images or seeds, scores the drafts with a judge command you supply
   (`size_judge.py` is an example that checks the model's proportions against an expected W,D,H), and only fully generates the

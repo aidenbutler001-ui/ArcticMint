@@ -37,6 +37,8 @@ cards busy: a multithreaded CPU post-processing stage, a parallel batch runner, 
 
 ```mermaid
 flowchart TD
+    P["Text prompt<br/>(optional, outside this repo)"] -.-> T["Any text-to-image model<br/>(optional, outside this repo)"]
+    T -.-> A
     A[RGB image] --> B[BiRefNet background removal]
     B --> C[DINOv3 ViT-L/16 conditioning tokens]
     C --> D["1. Sparse-structure flow DiT<br/>(dense 16^3) -> 64^3 occupancy"]
@@ -45,6 +47,9 @@ flowchart TD
     F --> G["CPU post: weld, hole fill, dual-contouring remesh,<br/>QEM decimation, xatlas UVs, PBR bake"]
     G --> H[UV-textured GLB]
 ```
+
+Dashed boxes are the optional prompt step described in [From a prompt to a model](#from-a-prompt-to-a-model); the engine
+itself starts at the RGB image.
 
 The three flow stages use a rectified-flow Euler sampler (12 steps by default) with classifier-free guidance. The
 default is the **1024 cascade**: a low-resolution `flow_512` pass, an upsample, then a high-resolution `flow_1024` pass.

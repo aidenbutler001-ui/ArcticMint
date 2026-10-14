@@ -447,6 +447,9 @@ add_executable(trellis-test-bigop src/test_bigop.cpp)
 target_link_libraries(trellis-test-bigop PRIVATE trellis_core)
 set_target_properties(trellis-test-bigop PROPERTIES BUILD_RPATH "${GGML_RPATH}")
 
+# CPU-only host helpers of the S2C down block (no model, no ggml)
+add_executable(trellis-test-s2c-host src/test_s2c_host.cpp)
+
 add_executable(trellis-test-c2s src/test_c2s.cpp)
 target_link_libraries(trellis-test-c2s PRIVATE trellis_core)
 set_target_properties(trellis-test-c2s PROPERTIES BUILD_RPATH "${GGML_RPATH}")

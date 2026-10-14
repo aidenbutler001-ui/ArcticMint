@@ -47,6 +47,7 @@ FAMILY = os.environ.get("TRELLIS_FAMILY", "trellis")
 # the environment rather than editing this file (the checkpoints live outside the repo, so
 # every machine — and every Windows contributor — needs different paths).
 MODELS = os.environ.get("TRELLIS_MODELS", "/media/ilintar/D_SSD/models/trellis2")
+TEX_ENC_DIR = os.environ.get("TEX_ENC_DIR", f"{os.environ.get('TRELLIS_MODELS', '/media/ilintar/D_SSD/models/trellis2')}/ckpts")
 PIXAL3D = os.environ.get("PIXAL3D_MODELS", "/media/ilintar/D_SSD/models/pixal3d")
 OUT = os.environ.get("TRELLIS_GGUF_OUT",
                      f"{MODELS}/gguf" if FAMILY == "trellis" else f"{PIXAL3D}/gguf")
@@ -67,6 +68,10 @@ MANIFEST = {
                        f"{MODELS}/ckpts/shape_dec_next_dc_f16c32_fp16.json",       "trellis2-shape-dec"),
     "tex_dec":        (f"{MODELS}/ckpts/tex_dec_next_dc_f16c32_fp16.safetensors",
                        f"{MODELS}/ckpts/tex_dec_next_dc_f16c32_fp16.json",         "trellis2-tex-dec"),
+    # Texture VAE encoder (route-2 colour start, see research notes). Not part of the default
+    # tree: point TEX_ENC_DIR at the folder holding the official safetensors + json.
+    "tex_enc":        (f"{TEX_ENC_DIR}/tex_enc_next_dc_f16c32_fp16.safetensors",
+                       f"{TEX_ENC_DIR}/tex_enc_next_dc_f16c32_fp16.json",          "trellis2-tex-enc"),
     "ss_dec":         (f"{MODELS}/tilarge/ckpts/ss_dec_conv3d_16l8_fp16.safetensors",
                        f"{MODELS}/tilarge/ckpts/ss_dec_conv3d_16l8_fp16.json",     "trellis2-ss-dec"),
     "dinov3":         (f"{MODELS}/dinov3/model.safetensors",
@@ -229,7 +234,7 @@ def convert(component):
     n_f16 = n_f32 = 0
     total = 0
     force_f32 = os.environ.get("FORCE_F32") == "1"
-    sparse_conv = component in ("shape_dec", "tex_dec", "shape_enc")
+    sparse_conv = component in ("shape_dec", "tex_dec", "tex_enc", "shape_enc")
 
     if component in ("birefnet", "naf"):
         n_f16, n_f32, total = (convert_birefnet if component == "birefnet" else convert_naf)(w, src)
@@ -268,7 +273,7 @@ def convert(component):
 
 
 if __name__ == "__main__":
-    comps = sys.argv[1:] or list(MANIFEST.keys())
+    comps = sys.argv[1:] or [k for k in MANIFEST if k != "tex_enc"]   # tex_enc only on request
     print(f"converting {len(comps)} component(s) -> {OUT}")
     for c in comps:
         convert(c)

@@ -663,6 +663,53 @@ int trellis_run(const trellis::TrellisParams& cfg) {
         };
         auto texture_rng = rng;
         pbr6 = decode_texture(mixed);
+        // Luma of the VISIBLE voxels: the first occupied voxel along each of six axis rays (per-column min and max along each
+        // axis), alpha-weighted, Rec.709. Every-voxel luma also counts the hidden interior, which on the engine's meshes is brown
+        // wood on a near-black chest, so it can pass a texture whose outside is far darker than the picture. Returns -1 if empty.
+        auto vis_luma = [&](const vector<float>& cur) -> double {
+            const int R = pbr_res; const size_t nR = (size_t)R * R; const size_t nvv = std::min(cur.size() / 6, pbr_coords->size());
+            std::vector<int32_t> imn[3], imx[3];
+            for (int ax = 0; ax < 3; ++ax) { imn[ax].assign(nR, INT32_MAX); imx[ax].assign(nR, -1); }
+            for (size_t i = 0; i < nvv; ++i) {
+                const auto& c = (*pbr_coords)[i];
+                for (int ax = 0; ax < 3; ++ax) {
+                    const int u = c[(ax + 1) % 3], v = c[(ax + 2) % 3], w = c[ax];
+                    const size_t col = (size_t)u * R + v;
+                    if (imn[ax][col] == INT32_MAX || w < (*pbr_coords)[imn[ax][col]][ax]) imn[ax][col] = (int32_t)i;
+                    if (imx[ax][col] < 0 || w > (*pbr_coords)[imx[ax][col]][ax]) imx[ax][col] = (int32_t)i;
+                }
+            }
+            double vy = 0, vw = 0;
+            auto add = [&](int32_t i) { if (i < 0 || i == INT32_MAX) return; const double a = cur[6*(size_t)i + 5];
+                vy += a * (0.2126 * cur[6*(size_t)i] + 0.7152 * cur[6*(size_t)i + 1] + 0.0722 * cur[6*(size_t)i + 2]); vw += a; };
+            for (int ax = 0; ax < 3; ++ax) for (size_t col = 0; col < nR; ++col) { add(imn[ax][col]); add(imx[ax][col]); }
+            return vw > 0 ? vy / vw : -1.0;
+        };
+        // Diagnostic (TRELLIS_TEX_DRAWS=N): redo only the texture stage N more times with fresh noise (shape latent and cond
+        // held fixed), print each draw's all-voxel and visible-surface luma against the picture's foreground luma, and exit
+        // before any mesh work. Used to measure how often a picture lands on a dark or wrong-palette colour draw.
+        if (const char* dr = std::getenv("TRELLIS_TEX_DRAWS")) {
+            const int ndraw = std::atoi(dr);
+            double fy = 0, fa = 0;
+            if (cut_sz > 0 && cutout.size() == (size_t)cut_sz * cut_sz * 4)
+                for (size_t i = 0; i < (size_t)cut_sz * cut_sz; ++i) {
+                    const unsigned char* q = &cutout[4 * i];
+                    if (q[3] < 128) continue;
+                    fy += (0.2126 * q[0] + 0.7152 * q[1] + 0.0722 * q[2]) / 255.0; fa += q[3] / 255.0;
+                }
+            const double pic_y = fa > 0 ? fy / fa : -1.0;
+            for (int d = 0; d <= ndraw; ++d) {
+                const vector<float> cur = d == 0 ? pbr6 : decode_texture(mixed);
+                double w = 0, rgb[3] = { 0, 0, 0 }; const size_t nv = cur.size() / 6;
+                for (size_t i = 0; i < nv; ++i) { const double a = cur[6*i + 5]; for (int k = 0; k < 3; ++k) rgb[k] += a * cur[6*i + k]; w += a; }
+                if (w > 0) for (int k = 0; k < 3; ++k) rgb[k] /= w;
+                const double y = 0.2126 * rgb[0] + 0.7152 * rgb[1] + 0.0722 * rgb[2], vy = vis_luma(cur);
+                printf("      [tex-draw] %d pic_y %.4f decoded_y %.4f vis_y %.4f ratio_vis %.3f rgb %.3f %.3f %.3f\n", d, pic_y, y, vy,
+                       (vy + 0.02) / (pic_y + 0.02), rgb[0], rgb[1], rgb[2]);
+                fflush(stdout);
+            }
+            return 0;
+        }
         // Opt-in colour check (--tex-reroll N / TRELLIS_TEX_REROLL=N). The texture flow runs without guidance and
         // sometimes lands on a dark-brown mode whatever the picture says (also seen in the reference ComfyUI). Compare
         // the decoded base colour's brightness with the picture's foreground and redo only this stage with a fresh
@@ -689,14 +736,22 @@ int trellis_run(const trellis::TrellisParams& cfg) {
                 printf("      [tex-reroll] skipped: no foreground cutout to compare with\n");
             } else {
                 const double pic_y = fy / fa, eps = 0.02;   // same offset on both sides of every ratio
-                auto base_y = [](const vector<float>& p6) {   // alpha-weighted mean luminance of the decoded base colour
+                // TRELLIS_TEX_REROLL_VISIBLE=1 (opt-in): judge the VISIBLE surface (vis_luma) instead of every voxel, with the accept
+                // window's lower limit at 0.3 of the picture's brightness instead of 0.6. A glossy black prop (the chest) is legitimately
+                // ~0.4 of its lit photo (the model returns albedo, the photo includes highlights), as are the other accepted props
+                // (0.36 to 0.70), while the dark-brown draws sit well below 0.3 (sweater picture: 0.02 against 0.68).
+                const char* rv = std::getenv("TRELLIS_TEX_REROLL_VISIBLE");
+                const bool reroll_visible = rv && *rv && std::strcmp(rv, "0") != 0;
+                auto base_y = [&](const vector<float>& p6) {   // alpha-weighted mean luminance of the decoded base colour
+                    if (reroll_visible) return vis_luma(p6);
                     double y = 0, w = 0; const size_t n = p6.size() / 6;
                     for (size_t i = 0; i < n; ++i) { const double a = p6[6*i + 5]; y += a * (0.2126 * p6[6*i] + 0.7152 * p6[6*i + 1] + 0.0722 * p6[6*i + 2]); w += a; }
                     return w > 0 ? y / w : 0.0;
                 };
                 auto ratio = [&](double y) { return (y + eps) / (pic_y + eps); };
                 auto score = [&](double y) { return std::fabs(std::log(ratio(y))); };   // symmetric in log space
-                const double lo = 0.6, hi = 1.0 / lo;   // accept window for decoded / picture brightness, symmetric in log space
+                const double lo = reroll_visible ? 0.3 : 0.6, hi = 1.0 / lo;   // accept window for decoded / picture brightness, symmetric in log space
+                if (reroll_visible) printf("      [tex-reroll] metric: visible surface, window %.2f..%.2f\n", lo, hi);
                 auto in_window = [&](double y) { const double r = ratio(y); return r >= lo && r <= hi; };
                 double y = base_y(pbr6), best_s = score(y);
                 int kept = 0;

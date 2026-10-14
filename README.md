@@ -80,7 +80,7 @@ the source checkpoints yourself with [`tools/convert.py`](tools/convert.py) (det
 | `--faces N` | QEM decimation target, at least 1000 (default 300K at 1024, 150K at 512) |
 | `--atlas PX` | UV atlas size (default 2048 at 1024) |
 | `--bg-removal threshold\|birefnet` | default is automatic: pre-matted images keep their alpha, otherwise BiRefNet if `birefnet.gguf` is in the models folder, else a threshold matte |
-| `--tex-reroll N` | opt-in colour check, integer 0..16 (default 0 = off; other values are rejected). Redoes only the texture stage up to N times when the decoded brightness is far off the picture's, and keeps the closest draw. Skipped when there is no foreground cutout. `TRELLIS_TEX_REROLL=N` is the fallback when the flag is absent (non-numeric ignored, out-of-range clamped to 0..16); an explicit `--tex-reroll 0` beats it |
+| `--tex-reroll N` | opt-in colour check, integer 0..16 (default 0 = off; other values are rejected). Redoes only the texture stage up to N times when the decoded brightness of the voxels a viewer can see (hidden inner shells are left out) is far off the picture's, and keeps the closest draw. Skipped when there is no foreground cutout. `TRELLIS_TEX_REROLL=N` is the fallback when the flag is absent (non-numeric ignored, out-of-range clamped to 0..16); an explicit `--tex-reroll 0` beats it |
 | `--box-uv` | faster box-projection UVs instead of the default xatlas unwrap |
 | `--no-texture` | geometry only |
 | `--gpu N` / `--backend NAME` | pick the device or force a ggml backend; `trellis-devices` lists what the build sees |

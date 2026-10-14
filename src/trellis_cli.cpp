@@ -18,6 +18,7 @@
 #include "remesh_dc.h"
 #include "post_parallel.h"
 #include "mesh_shape.h"
+#include "tex_check.h"
 #include "stb_image_write.h"
 #include "trellis_run.h"
 #include "retopo_process.h"
@@ -689,9 +690,14 @@ int trellis_run(const trellis::TrellisParams& cfg) {
                 printf("      [tex-reroll] skipped: no foreground cutout to compare with\n");
             } else {
                 const double pic_y = fy / fa, eps = 0.02;   // same offset on both sides of every ratio
-                auto base_y = [](const vector<float>& p6) {   // alpha-weighted mean luminance of the decoded base colour
-                    double y = 0, w = 0; const size_t n = p6.size() / 6;
-                    for (size_t i = 0; i < n; ++i) { const double a = p6[6*i + 5]; y += a * (0.2126 * p6[6*i] + 0.7152 * p6[6*i + 1] + 0.0722 * p6[6*i + 2]); w += a; }
+                // Only voxels a viewer could see count: hidden inner shells and cavities decode to a dark brown that the picture
+                // never shows, and averaging them in made a dark result pass (chest: 0.70 on every voxel, ~0.40 seen).
+                const vector<uint8_t> exposed = trellis::exposed_voxels(*pbr_coords);
+                size_t n_exposed = 0; for (uint8_t e : exposed) n_exposed += e;
+                printf("      [tex-reroll] brightness over %zu of %zu voxels a viewer can see\n", n_exposed, exposed.size());
+                auto base_y = [&](const vector<float>& p6) {   // alpha-weighted mean luminance of the decoded base colour, exposed voxels only
+                    double y = 0, w = 0; const size_t n = std::min(p6.size() / 6, exposed.size());
+                    for (size_t i = 0; i < n; ++i) { if (!exposed[i]) continue; const double a = p6[6*i + 5]; y += a * (0.2126 * p6[6*i] + 0.7152 * p6[6*i + 1] + 0.0722 * p6[6*i + 2]); w += a; }
                     return w > 0 ? y / w : 0.0;
                 };
                 auto ratio = [&](double y) { return (y + eps) / (pic_y + eps); };

@@ -419,6 +419,9 @@ target_include_directories(trellis-test-uv-chart-density PRIVATE include)
 add_executable(trellis-test-quad-quality src/test_quad_quality.cpp)
 target_include_directories(trellis-test-quad-quality PRIVATE include)
 
+add_executable(trellis-test-tex-check src/test_tex_check.cpp)
+target_include_directories(trellis-test-tex-check PRIVATE include)
+
 find_package(Threads REQUIRED)
 add_executable(trellis-test-uv-normal-margin src/test_uv_normal_margin.cpp src/tri_bvh.cpp src/post_parallel.cpp)
 target_include_directories(trellis-test-uv-normal-margin PRIVATE include)

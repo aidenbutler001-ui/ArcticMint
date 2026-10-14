@@ -1,6 +1,7 @@
 #pragma once
 // Colour check helper for --tex-reroll. Pure C++, no ggml.
 #include <array>
+#include <cstddef>
 #include <cstdint>
 #include <unordered_map>
 #include <vector>

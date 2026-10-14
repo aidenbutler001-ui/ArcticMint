@@ -148,10 +148,14 @@ hold a lock (its pid exits at once), which is why the runner imports the module.
 
 - **`--phase-lock PATH`**: exported as `ARCTIC_GPU_PHASE_LOCK` to `post-replay` (around GPU QEM) and the finish command
   (around the Cycles bake, `finish.py`), never to generation, so the second card runs one of the two at a time. Unset means no lock.
-- **`--slot-yield`** (needs `--gen-lanes 2` and `--gpulock`): when another lock owner asks for a card, the runner finishes its
-  current job on that card, releases it, and takes it back afterwards. No preemption. Implemented
-  (needs a lock module with `want` and `foreign_demand`); see
-  [`docs/arctic/live-queue.md`](../../docs/arctic/live-queue.md) (Phase 2).
+- **`--slot-yield`** (needs `--gen-lanes 2` and `--gpulock`, not `--gpulock-assume-held`; the lock module must provide
+  `foreign_demand`, otherwise the runner exits). A monitor thread polls every 2 s for another owner's `want` or reservation on
+  each card. On demand it pauses that card: no new job is placed on it (generation, post or finish) and running work is not
+  interrupted. Once nothing of ours is running on the card it unreserves and releases the lock and logs the hand-over. It then
+  watches the lock file: after the wanting owner has held the card and let go (a `want` is cleared with `unwant`), and no
+  demand is left, it reserves and acquires the card again without waiting and resumes scheduling on it. If the other owner got
+  there first, it tries again on the next poll. If the demand disappears before the card was released, the pause is simply
+  lifted. See [`docs/arctic/live-queue.md`](../../docs/arctic/live-queue.md) (Phase 2).
 
 `finish.py` and the lock module are not in this repository.
 

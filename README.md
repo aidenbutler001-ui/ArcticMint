@@ -154,12 +154,13 @@ Full list in [`NOTICE.md`](NOTICE.md); the essentials:
 - **ArcticMint / trellis.cpp** is released under the **MIT licence**, Copyright (c) 2026 Piotr Wilkin. See [`LICENSE`](LICENSE).
   ArcticMint is derived from [pwilkin/trellis.cpp](https://github.com/pwilkin/trellis.cpp).
 - **TRELLIS.2** is by Microsoft ([microsoft/TRELLIS.2](https://github.com/microsoft/TRELLIS.2), MIT licence). The weights are
-  [`microsoft/TRELLIS.2-4B`](https://huggingface.co/microsoft/TRELLIS.2-4B).
-- **DINOv3**: **Built with DINOv3.** The image encoder is DINOv3 ViT-L/16 (Meta). DINOv3 is distributed under its own licence
-  agreement, which requires the "Built with DINOv3" attribution and that you pass its agreement on to anyone you give these
-  weights to. Read and follow the DINOv3 licence before using or redistributing the converted weights.
-- **BiRefNet** ([ZhengPeng7/BiRefNet](https://huggingface.co/ZhengPeng7/BiRefNet)) performs background removal.
+  [`microsoft/TRELLIS.2-4B`](https://huggingface.co/microsoft/TRELLIS.2-4B), also MIT per the model card.
+- **DINOv3** (Meta): the image encoder is DINOv3 ViT-L/16, distributed under the
+  [DINOv3 License](https://github.com/facebookresearch/dinov3/blob/main/LICENSE.md), not MIT. If you redistribute the weights or
+  converted GGUFs you must do so under that agreement and include a copy of it; research publications must acknowledge the use.
+  The text has no "Built with DINOv3" requirement. See [`NOTICE.md`](NOTICE.md).
+- **BiRefNet** ([ZhengPeng7/BiRefNet](https://huggingface.co/ZhengPeng7/BiRefNet)) performs background removal (MIT).
 - **ggml** is the tensor library, a git submodule at `thirdparty/ggml` pointing at a fork. Vendored in `thirdparty/`: stb, xatlas, cpp-httplib, fqms and meshoptimizer.
 - **GGUF conversions**: the converted model files are derivatives of the source models above. Their licence is listed as
   *other / see source model*; each component stays under its original licence.
-- Optional: [Pixal3D](https://github.com/TencentARC/Pixal3D) (TencentARC), which `--model pixal3d` runs.
+- Optional: [Pixal3D](https://github.com/TencentARC/Pixal3D) (TencentARC, MIT), which `--model pixal3d` runs.

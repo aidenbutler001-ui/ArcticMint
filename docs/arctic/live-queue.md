@@ -1,7 +1,7 @@
 # Live priority queue for arctic-batch: design and status
 
 **Status:** phase 1 built and tested with the fake engine; **opt-in** (`--queue-dir`), default runs are unchanged. It is not the
-default until a PC run on real props passes and the output hashes match the plain run. Phase 2 (`--slot-yield`, yielding a card to another GPU user) is also implemented, opt-in, and has not yet run on real hardware.
+default until a PC run on real props passes and the output hashes match the plain run. Phase 2 (`--slot-yield`, yielding a card to another GPU user) is also implemented and opt-in.
 
 ## Why
 The batch list is fixed at start. The 4070 idles at the end of every batch until the next one is started by hand (an estimated ~200 s per
@@ -30,9 +30,15 @@ python arctic_batch.py close  --queue-dir Q
 ## Phase 2 (built, `--slot-yield`): yielding a card to another GPU user
 Aim: between jobs, a lane's card is handed to another program that needs it instead of being held for the whole session
 (estimated ~200 s per boundary). Needs `--gen-lanes 2` and `--gpulock`, and the runner must hold the locks itself (not `--gpulock-assume-held`).
-As built (`slot_loop` in `arctic_batch.py`): the other program announces demand with the lock module's `want`, or reserves the card.
-The runner asks the module for `foreign_demand(card, owner)`; when a lane finishes its job on a card with foreign demand, the card is
-paused, released to the other owner, and re-acquired once the demand is gone. No preemption: the other program waits at most one job.
+As built (`slot_loop` in `arctic_batch.py`, polling every 2 s): the other program announces demand with the lock module's `want`, or reserves the card.
+The runner asks the module for `foreign_demand(card, owner)`.
+1. **Pause.** On demand the card is paused: no new job (generation, post or finish) is placed on it. Running work is not interrupted.
+   If the demand disappears before the card is released, the pause is lifted.
+2. **Release.** When nothing of ours is running on the card, the runner unreserves and releases it (`yield_card`) and logs the hand-over.
+   No preemption: the other program waits for the work already on the card to finish, which can be a generation, a post or a finish.
+3. **Re-acquire.** The runner watches the lock file. Once the wanting owner has held the card and released it, a leftover `want` is
+   cleared with `unwant`; with no demand left, the runner reserves and acquires the card again without waiting (`retake_card`) and
+   lifts the pause. If the other owner got there first, it retries on the next poll.
 The lock module must provide `foreign_demand` (the runner exits otherwise).
 
 Original design, superseded: a `gpu<N>.wanted` file (JSON owner, what, until) in the lock directory, same rules as `.reserved`. The code

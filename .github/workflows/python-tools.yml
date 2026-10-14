@@ -1,0 +1,30 @@
+name: Python tools
+
+on:
+  pull_request:
+    paths:
+      - "tools/prompt-to-model/**"
+      - ".github/workflows/python-tools.yml"
+  push:
+    branches: [main]
+    paths:
+      - "tools/prompt-to-model/**"
+      - ".github/workflows/python-tools.yml"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pytools-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  prompt-to-model:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: false
+      - name: Tests (fake ComfyUI and fake engine, no GPU)
+        run: python3 -m unittest discover -s tools/prompt-to-model/tests -v

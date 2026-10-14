@@ -1,42 +1,42 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 950 400" width="950" role="img" aria-label="ArcticMint pipeline: text prompt, picture from ComfyUI, then RGB image, BiRefNet, DINOv3, three flow stages, CPU post-processing, GLB">
-<defs><marker id="a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0L10 5L0 10z" fill="#555"/></marker></defs>
-<rect width="950" height="400" rx="12" fill="#ffffff"/>
-<g font-family="Segoe UI, Helvetica, Arial, sans-serif" text-anchor="middle" fill="#1f2328">
-<rect x="20" y="40" width="190" height="70" rx="10" fill="#f3effb" stroke="#7a5bb5" stroke-width="2"/>
+<defs><linearGradient id="bg" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#d6f1fc"/><stop offset="1" stop-color="#9ed9f5"/></linearGradient><marker id="a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0L10 5L0 10z" fill="#2f6f9a"/></marker></defs>
+<rect width="950" height="400" rx="12" fill="url(#bg)"/>
+<g font-family="Segoe UI, Helvetica, Arial, sans-serif" text-anchor="middle" fill="#14405c">
+<rect x="20" y="40" width="190" height="70" rx="10" fill="#c9f0c4" stroke="#3a9d5d" stroke-width="2"/>
 <text x="115.0" y="70.0" font-size="15" font-weight="600">Text prompt</text>
 <text x="115.0" y="90.0" font-size="12" font-weight="400">tools/prompt-to-model</text>
-<rect x="260" y="40" width="190" height="70" rx="10" fill="#f3effb" stroke="#7a5bb5" stroke-width="2"/>
+<rect x="260" y="40" width="190" height="70" rx="10" fill="#c9f0c4" stroke="#3a9d5d" stroke-width="2"/>
 <text x="355.0" y="70.0" font-size="15" font-weight="600">Picture from ComfyUI</text>
 <text x="355.0" y="90.0" font-size="12" font-weight="400">FLUX.2-klein or Z-Image</text>
-<rect x="500" y="40" width="190" height="70" rx="10" fill="#e8f1fb" stroke="#2f6db5" stroke-width="2"/>
+<rect x="500" y="40" width="190" height="70" rx="10" fill="#ffffff" stroke="#2f8fc7" stroke-width="2"/>
 <text x="595.0" y="80.0" font-size="15" font-weight="600">Picture (RGB image)</text>
-<rect x="740" y="40" width="190" height="70" rx="10" fill="#eaf6f1" stroke="#2c8a6b" stroke-width="2"/>
+<rect x="740" y="40" width="190" height="70" rx="10" fill="#eefaff" stroke="#5aaee0" stroke-width="2"/>
 <text x="835.0" y="70.0" font-size="15" font-weight="600">BiRefNet</text>
 <text x="835.0" y="90.0" font-size="12" font-weight="400">background removal</text>
-<rect x="740" y="180" width="190" height="70" rx="10" fill="#eaf6f1" stroke="#2c8a6b" stroke-width="2"/>
+<rect x="740" y="180" width="190" height="70" rx="10" fill="#eefaff" stroke="#5aaee0" stroke-width="2"/>
 <text x="835.0" y="210.0" font-size="15" font-weight="600">DINOv3 ViT-L/16</text>
 <text x="835.0" y="230.0" font-size="12" font-weight="400">conditioning tokens</text>
-<rect x="500" y="180" width="190" height="70" rx="10" fill="#eaf6f1" stroke="#2c8a6b" stroke-width="2"/>
+<rect x="500" y="180" width="190" height="70" rx="10" fill="#eefaff" stroke="#5aaee0" stroke-width="2"/>
 <text x="595.0" y="210.0" font-size="15" font-weight="600">1. Sparse-structure</text>
 <text x="595.0" y="230.0" font-size="12" font-weight="400">flow DiT, 16³ → 64³</text>
-<rect x="260" y="180" width="190" height="70" rx="10" fill="#eaf6f1" stroke="#2c8a6b" stroke-width="2"/>
+<rect x="260" y="180" width="190" height="70" rx="10" fill="#eefaff" stroke="#5aaee0" stroke-width="2"/>
 <text x="355.0" y="210.0" font-size="15" font-weight="600">2. Shape SLAT flow DiT</text>
 <text x="355.0" y="230.0" font-size="12" font-weight="400">shape decoder → mesh</text>
-<rect x="20" y="180" width="190" height="70" rx="10" fill="#eaf6f1" stroke="#2c8a6b" stroke-width="2"/>
+<rect x="20" y="180" width="190" height="70" rx="10" fill="#eefaff" stroke="#5aaee0" stroke-width="2"/>
 <text x="115.0" y="210.0" font-size="15" font-weight="600">3. Texture SLAT</text>
 <text x="115.0" y="230.0" font-size="12" font-weight="400">flow DiT, 6-ch PBR</text>
-<rect x="20" y="320" width="190" height="70" rx="10" fill="#eaf6f1" stroke="#2c8a6b" stroke-width="2"/>
+<rect x="20" y="320" width="190" height="70" rx="10" fill="#eefaff" stroke="#5aaee0" stroke-width="2"/>
 <text x="115.0" y="350.0" font-size="15" font-weight="600">CPU post</text>
 <text x="115.0" y="370.0" font-size="12" font-weight="400">weld, remesh, UVs, bake</text>
-<rect x="260" y="320" width="190" height="70" rx="10" fill="#e8f1fb" stroke="#2f6db5" stroke-width="2"/>
+<rect x="260" y="320" width="190" height="70" rx="10" fill="#ffffff" stroke="#2f8fc7" stroke-width="2"/>
 <text x="355.0" y="360.0" font-size="15" font-weight="600">UV-textured GLB</text>
-<line x1="210" y1="75.0" x2="258" y2="75.0" stroke="#555" stroke-width="2" marker-end="url(#a)"/>
-<line x1="450" y1="75.0" x2="498" y2="75.0" stroke="#555" stroke-width="2" marker-end="url(#a)"/>
-<line x1="690" y1="75.0" x2="738" y2="75.0" stroke="#555" stroke-width="2" marker-end="url(#a)"/>
-<line x1="835.0" y1="110" x2="835.0" y2="178" stroke="#555" stroke-width="2" marker-end="url(#a)"/>
-<line x1="740" y1="215.0" x2="692" y2="215.0" stroke="#555" stroke-width="2" marker-end="url(#a)"/>
-<line x1="500" y1="215.0" x2="452" y2="215.0" stroke="#555" stroke-width="2" marker-end="url(#a)"/>
-<line x1="260" y1="215.0" x2="212" y2="215.0" stroke="#555" stroke-width="2" marker-end="url(#a)"/>
-<line x1="115.0" y1="250" x2="115.0" y2="318" stroke="#555" stroke-width="2" marker-end="url(#a)"/>
-<line x1="210" y1="355.0" x2="258" y2="355.0" stroke="#555" stroke-width="2" marker-end="url(#a)"/>
+<line x1="210" y1="75.0" x2="258" y2="75.0" stroke="#2f6f9a" stroke-width="2" marker-end="url(#a)"/>
+<line x1="450" y1="75.0" x2="498" y2="75.0" stroke="#2f6f9a" stroke-width="2" marker-end="url(#a)"/>
+<line x1="690" y1="75.0" x2="738" y2="75.0" stroke="#2f6f9a" stroke-width="2" marker-end="url(#a)"/>
+<line x1="835.0" y1="110" x2="835.0" y2="178" stroke="#2f6f9a" stroke-width="2" marker-end="url(#a)"/>
+<line x1="740" y1="215.0" x2="692" y2="215.0" stroke="#2f6f9a" stroke-width="2" marker-end="url(#a)"/>
+<line x1="500" y1="215.0" x2="452" y2="215.0" stroke="#2f6f9a" stroke-width="2" marker-end="url(#a)"/>
+<line x1="260" y1="215.0" x2="212" y2="215.0" stroke="#2f6f9a" stroke-width="2" marker-end="url(#a)"/>
+<line x1="115.0" y1="250" x2="115.0" y2="318" stroke="#2f6f9a" stroke-width="2" marker-end="url(#a)"/>
+<line x1="210" y1="355.0" x2="258" y2="355.0" stroke="#2f6f9a" stroke-width="2" marker-end="url(#a)"/>
 </g></svg>

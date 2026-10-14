@@ -39,7 +39,7 @@ cards busy: a multithreaded CPU post-processing stage, a parallel batch runner, 
 
 <p align="center"><img src="assets/pipeline.svg" alt="ArcticMint pipeline: text prompt, picture from ComfyUI, then BiRefNet, DINOv3, three flow stages, CPU post-processing, GLB" width="100%"></p>
 
-The purple boxes are the [prompt-to-model](#from-a-prompt-to-a-model) tool. You can skip them and start the engine from any
+The green boxes are the [prompt-to-model](#from-a-prompt-to-a-model) tool. You can skip them and start the engine from any
 picture; the engine itself begins at the RGB image.
 
 The three flow stages use a rectified-flow Euler sampler (12 steps by default) with classifier-free guidance. The

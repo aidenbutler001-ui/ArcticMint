@@ -1,3 +1,5 @@
+<p align="center"><img src="assets/logo.svg" alt="A small mint plant growing on a piece of arctic ice" width="360"></p>
+
 <h1 align="center">ArcticMint</h1>
 
 <p align="center"><b>Image in, textured 3D model out, all in native C++.</b><br>

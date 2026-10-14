@@ -3,6 +3,7 @@
 person, a script, another Claude session) can add a job while a batch runs, and nothing needs a socket or a service.
 
   python arctic_batch.py submit --queue-dir Q --image path.png [--priority 100] [--est-s 600] [--vram-gb 4.5] [--pin A|B] [--name N]
+                                    [--job-res N] [--job-seed N] [--job-faces N] [--job-skip-finish] [--job-cli-extra "..."]   (per-job overrides: a 512 draft)
   python arctic_batch.py close  --queue-dir Q          (no more jobs: the runner finishes what is queued and exits)
 
 Layout:  Q/<time>-<name>.job.json  new job (written as .tmp then renamed, so the runner never reads half a file)
@@ -24,7 +25,35 @@ def _write_atomic(path, text):
     os.replace(tmp, path)
 
 
-def submit(qdir, image, name=None, priority=0, est_s=None, vram_gb=None, pin=None):
+OPT_KEYS = ("res", "seed", "faces", "cli_extra", "skip_finish")
+
+
+def _clean_opts(opts):
+    """Per-job overrides (OPT-IN; a plain job has none): res, seed, faces (ints) and cli_extra (a string appended after the
+    batch's own --cli-extra). Raises ValueError on anything else so a typo cannot silently run with production flags."""
+    out = {}
+    for k, v in (opts or {}).items():
+        if v is None:
+            continue
+        if k not in OPT_KEYS:
+            raise ValueError("unknown job option %r (allowed: %s)" % (k, ", ".join(OPT_KEYS)))
+        if k == "skip_finish":
+            if v:
+                out[k] = True
+        elif k == "cli_extra":
+            if not isinstance(v, str):
+                raise ValueError("cli_extra must be a string")
+            out[k] = v
+        else:
+            if isinstance(v, bool) or not isinstance(v, (int, str)) or not str(v).lstrip("-").isdigit():
+                raise ValueError("%s must be an integer" % k)
+            out[k] = int(v)
+    if "res" in out and not 64 <= out["res"] <= 4096:
+        raise ValueError("res out of range")
+    return out
+
+
+def submit(qdir, image, name=None, priority=0, est_s=None, vram_gb=None, pin=None, opts=None):
     """Add a job; returns the job file path. The image is stored as an absolute path."""
     image = os.path.abspath(image)
     name = name or os.path.splitext(os.path.basename(image))[0]
@@ -32,8 +61,11 @@ def submit(qdir, image, name=None, priority=0, est_s=None, vram_gb=None, pin=Non
         raise ValueError("bad job name %r (letters, digits, _ . - only)" % name)
     if pin not in (None, "A", "B"):
         raise ValueError("pin must be A or B")
+    opts = _clean_opts(opts)
     os.makedirs(qdir, exist_ok=True)
     job = {"name": name, "image": image, "priority": int(priority)}
+    if opts:
+        job["opts"] = opts
     for k, v in (("est_s", est_s), ("vram_gb", vram_gb), ("pin", pin)):
         if v is not None:
             job[k] = v
@@ -68,7 +100,7 @@ class LiveQueue:
 
     def poll(self, known):
         """Claim every new job file, oldest first. `known` = names already in this batch (lower-case compare: NTFS).
-        Returns a list of dicts (name, image, priority, est_s, vram_gb, pin); bad files go to rejected/."""
+        Returns a list of dicts (name, image, priority, est_s, vram_gb, pin, opts); bad files go to rejected/."""
         out, seen = [], {k.lower() for k in known}
         try:
             files = sorted(f for f in os.listdir(self.qdir) if f.endswith(".job.json"))
@@ -80,7 +112,8 @@ class LiveQueue:
                 with open(src, encoding="utf-8") as f:
                     job = json.load(f)
                 name, image = str(job["name"]), str(job["image"])
-            except (OSError, ValueError, KeyError, TypeError) as e:
+                opts = _clean_opts(job.get("opts"))
+            except (OSError, ValueError, KeyError, TypeError, AttributeError) as e:
                 self._reject(fn, "unreadable job file: %r" % (e,))
                 continue
             if not NAME_RE.match(name):
@@ -96,5 +129,5 @@ class LiveQueue:
                     continue
                 seen.add(name.lower())
                 out.append({"name": name, "image": image, "priority": int(job.get("priority", 0)),
-                            "est_s": job.get("est_s"), "vram_gb": job.get("vram_gb"), "pin": job.get("pin")})
+                            "est_s": job.get("est_s"), "vram_gb": job.get("vram_gb"), "pin": job.get("pin"), "opts": opts})
         return out

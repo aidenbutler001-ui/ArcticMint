@@ -144,6 +144,47 @@ class LiveQueueTests(unittest.TestCase):
         self.assertLess(start["u"], start["e"]); self.assertLess(start["u"], start["a"])   # urgent beat the earlier normal jobs
         self.assertEqual(tb.ab.cmd_compare(type("A", (), {"dir_a": ref, "dir_b": live})), 0)
 
+    def test_per_job_options_reach_only_that_job(self):
+        import live_queue as lq
+        img = tb.make_imgs(os.makedirs(os.path.join(self.d, "i")) or os.path.join(self.d, "i"), ["plain", "draft"])
+        out = os.path.join(self.d, "o")
+        lq.submit(self.q, os.path.join(img, "draft.png"), priority=0, opts={"res": 512, "seed": 9, "faces": 150000,
+                                                                          "cli_extra": "--steps 12 --steps-ss 24"})
+        first = os.path.join(self.d, "first"); os.makedirs(first)
+        os.replace(os.path.join(img, "plain.png"), os.path.join(first, "plain.png"))
+        lq.close(self.q)
+        self.assertEqual(tb.run(first, out, "--gen-lanes", "2", "--lane2-speed", "1.0", "--min-gain-s", "0",
+                                "--queue-dir", self.q, "--res", "1024", "--seed", "1", "--faces", "400000"), 0)
+        def argv(name, kind):
+            for line in open(os.path.join(out, "logs", "%s.%s.log" % (name, kind)), errors="replace"):
+                if line.startswith("ARGS "):
+                    j = json.loads(line[5:]); return j["argv"] if isinstance(j, dict) else j
+        g, pl = argv("draft", "gen"), argv("plain", "gen")
+        self.assertEqual((g[g.index("--res") + 1], g[g.index("--seed") + 1], g[-4:]), ("512", "9", ["--steps", "12", "--steps-ss", "24"]))
+        self.assertEqual((pl[pl.index("--res") + 1], pl[pl.index("--seed") + 1], "--steps" in pl), ("1024", "1", False))
+        pd, pp = argv("draft", "post"), argv("plain", "post")
+        self.assertEqual((pd[pd.index("--geometry-res") + 1], pd[pd.index("--faces") + 1]), ("512", "150000"))
+        self.assertEqual((pp[pp.index("--geometry-res") + 1], pp[pp.index("--faces") + 1]), ("1024", "400000"))
+
+    def test_batch_pin_applies_to_live_jobs(self):
+        import live_queue as lq
+        img = tb.make_imgs(os.makedirs(os.path.join(self.d, "i")) or os.path.join(self.d, "i"), ["a", "b", "c"])
+        first = os.path.join(self.d, "first"); os.makedirs(first)
+        os.replace(os.path.join(img, "a.png"), os.path.join(first, "a.png"))
+        lq.submit(self.q, os.path.join(img, "b.png")); lq.submit(self.q, os.path.join(img, "c.png")); lq.close(self.q)
+        out = os.path.join(self.d, "o")
+        self.assertEqual(tb.run(first, out, "--gen-lanes", "2", "--lane2-speed", "1.0", "--min-gain-s", "0", "--queue-dir", self.q,
+                                "--pin", "b=A", "--pin", "c=A"), 0)
+        r = {x["asset"]: x for x in tb.rows(out)[:-1]}
+        self.assertEqual((r["b"]["gen_lane"], r["c"]["gen_lane"]), ("A", "A"))
+
+    def test_bad_job_options_are_refused(self):
+        import live_queue as lq
+        img = tb.make_imgs(os.makedirs(os.path.join(self.d, "i")) or os.path.join(self.d, "i"), ["x"])
+        for bad in ({"ress": 512}, {"res": "big"}, {"res": 5}, {"cli_extra": 3}):
+            with self.assertRaises(ValueError):
+                lq.submit(self.q, os.path.join(img, "x.png"), opts=bad)
+
     def test_idle_exit_and_validation(self):
         import contextlib, io
         os.makedirs(self.q)
@@ -369,3 +410,84 @@ class Runner(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class DraftRefine(unittest.TestCase):
+    """tools/arctic-batch/draft_refine.py with the fake engine and fake judge: drafts carry draft flags, only keepers are refined,
+    refine output is hash-equal to a plain batch of the same pictures."""
+    def test_funnel(self):
+        import draft_refine as dr
+        t = tempfile.TemporaryDirectory(); d = t.name
+        os.environ["FAKE_GEN_S"] = "0.3"; os.environ["FAKE_POST_S"] = "0.1"
+        imgs = tb.make_imgs(os.makedirs(os.path.join(d, "i")) or os.path.join(d, "i"), ["c1", "c2", "c3", "v1", "v2"])
+        man = os.path.join(d, "props.json")
+        json.dump({"chest": [os.path.join(imgs, "c1.png"), os.path.join(imgs, "c2.png"), {"image": os.path.join(imgs, "c3.png"), "seed": 5}],
+                   "veto": [os.path.join(imgs, "v1.png"), os.path.join(imgs, "v2.png")]}, open(man, "w"))
+        seed = os.path.join(d, "seed"); os.makedirs(seed)
+        os.replace(os.path.join(imgs, "c1.png"), os.path.join(seed, "seedimg.png"))
+        import shutil; shutil.copy(os.path.join(seed, "seedimg.png"), os.path.join(imgs, "c1.png"))
+        q, out = os.path.join(d, "q"), os.path.join(d, "out")
+        res = {}
+        th = threading.Thread(target=lambda: res.setdefault("rc", tb.run(seed, out, "--gen-lanes", "2", "--lane2-speed", "1.0",
+                                                                         "--min-gain-s", "0", "--queue-dir", q, "--res", "1024",
+                                                                         "--finish-cmd", "%s %s {glb} {name} {out}" % (sys.executable, os.path.join(HERE, "fake_engine.py") + " finish"))))
+        th.start(); time.sleep(0.3)
+        judge = "%s %s {glb}" % (sys.executable, os.path.join(HERE, "fake_judge.py"))
+        args = type("A", (), dict(queue_dir=q, out=out, manifest=man, judge_cmd=judge, keep=1, draft_res=None, draft_cli_extra=None,
+                                  draft_est_s=1, draft_vram_gb=None, refine_est_s=1, draft_timeout=60, close=True, plain=False))
+        rep = dr.run(args, log=lambda m: None)
+        th.join(120); self.assertFalse(th.is_alive()); self.assertEqual(res["rc"], 0)
+        self.assertEqual(rep["props"]["chest"]["keepers"], ["chest_3"])         # highest score, one keeper
+        self.assertEqual(rep["props"]["veto"]["keepers"], [])                    # the judge vetoed both drafts
+        names = {r["asset"] for r in tb.rows(out)[:-1]}
+        self.assertEqual(names, {"seedimg", "chest_1_d", "chest_2_d", "chest_3_d", "veto_1_d", "veto_2_d", "chest_3"})
+        fin = sorted(os.listdir(os.path.join(out, "finished")))
+        self.assertEqual(fin, ["chest_3", "seedimg"])                           # drafts are never finished
+        def gen_argv(n):
+            for l in open(os.path.join(out, "logs", n + ".gen.log"), errors="replace"):
+                if l.startswith("ARGS "): return json.loads(l[5:])["argv"]
+        dv, rv = gen_argv("chest_3_d"), gen_argv("chest_3")
+        self.assertEqual(dv[dv.index("--res") + 1], "512"); self.assertIn("--steps-ss", dv)
+        self.assertEqual(rv[rv.index("--res") + 1], "1024"); self.assertNotIn("--steps-ss", rv)
+        self.assertEqual((dv[dv.index("--seed") + 1], rv[rv.index("--seed") + 1]), ("5", "5"))   # the candidate's own seed, draft and refine
+        # refine == plain run of the same picture
+        plain_in = os.path.join(d, "plain"); os.makedirs(plain_in); shutil.copy(os.path.join(imgs, "c3.png"), os.path.join(plain_in, "chest_3.png"))
+        plain = os.path.join(d, "plain_out")
+        self.assertEqual(tb.run(plain_in, plain, "--res", "1024", "--seed", "5"), 0)
+        self.assertEqual(tb.ab.masked_glb_hash(os.path.join(out, "chest_3.glb")), tb.ab.masked_glb_hash(os.path.join(plain, "chest_3.glb")))
+        t.cleanup()
+
+    def test_plain_arm_submits_everything_as_full_jobs(self):
+        import draft_refine as dr
+        t = tempfile.TemporaryDirectory(); d = t.name
+        imgs = tb.make_imgs(os.makedirs(os.path.join(d, "i")) or os.path.join(d, "i"), ["a", "b"])
+        man = os.path.join(d, "props.json")
+        json.dump({"p": [os.path.join(imgs, "a.png"), {"image": os.path.join(imgs, "b.png"), "seed": 3}]}, open(man, "w"))
+        q = os.path.join(d, "q")
+        args = type("A", (), dict(queue_dir=q, out=os.path.join(d, "o"), manifest=man, judge_cmd="", keep=1, draft_res=None,
+                                  draft_cli_extra=None, draft_est_s=1, draft_vram_gb=None, refine_est_s=1, draft_timeout=1, close=True, plain=True))
+        rep = dr.run(args, log=lambda m: None)
+        self.assertEqual(rep["props"]["p"]["keepers"], ["p_1", "p_2"])
+        got = {g["name"]: g for g in __import__("live_queue").LiveQueue(q, lambda m: None).poll([])}
+        self.assertEqual(sorted(got), ["p_1", "p_2"]); self.assertEqual(got["p_2"]["opts"], {"seed": 3}); self.assertEqual(got["p_1"]["opts"], {})
+        t.cleanup()
+
+
+class SizeJudge(unittest.TestCase):
+    def _glb(self, path, mn, mx):
+        js = json.dumps({"asset": {"version": "2.0"}, "meshes": [{"primitives": [{"attributes": {"POSITION": 0}}]}],
+                         "accessors": [{"min": mn, "max": mx}]}).encode()
+        js += b" " * (-len(js) % 4)
+        import struct
+        open(path, "wb").write(b"glTF" + struct.pack("<II", 12 + 8 + len(js), 2) + struct.pack("<II", len(js), 0x4E4F534A) + js)
+
+    def test_score_and_veto(self):
+        import size_judge as sj, contextlib, io
+        t = tempfile.TemporaryDirectory(); g = os.path.join(t.name, "a.glb")
+        self._glb(g, [0, 0, 0], [1.3, 0.85, 0.8])                        # chest, axes in another order
+        self.assertAlmostEqual(sj.deviation(sj.glb_bounds(g), [1.3, 0.8, 0.85]), 0.0, places=6)
+        self._glb(g, [0, 0, 0], [1.3, 0.4, 0.85])                        # half as deep
+        with contextlib.redirect_stdout(io.StringIO()) as o:
+            rc = sj.main([g, "--spec", "1.3,0.8,0.85"])
+        self.assertEqual(rc, 4); self.assertNotIn("-0", o.getvalue().splitlines()[-1][:2])
+        t.cleanup()

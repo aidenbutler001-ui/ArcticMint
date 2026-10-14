@@ -17,7 +17,7 @@
 | [`live-queue.md`](arctic/live-queue.md) | Live priority queue for the batch runner (opt-in) |
 | [`pr-history.md`](arctic/pr-history.md) | Descriptions of pull requests merged in the earlier fork |
 
-Tool READMEs: [`arctic-batch`](../tools/arctic-batch/README.md), [`arctic-post`](../tools/arctic-post/README.md),
+Tool READMEs: [`prompt-to-model`](../tools/prompt-to-model/README.md), [`arctic-batch`](../tools/arctic-batch/README.md), [`arctic-post`](../tools/arctic-post/README.md),
 [`mv_preview`](../tools/mv_preview/README.md).
 
 ## Engine specification: [`spec/`](spec/)

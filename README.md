@@ -13,7 +13,7 @@ MIT licensed &middot; C++17 &middot; ggml &middot; CUDA, Vulkan, ROCm, Metal</p>
 
 ArcticMint is a C++/[ggml](https://github.com/ggml-org/ggml) port of
 Microsoft's [TRELLIS.2-4B](https://huggingface.co/microsoft/TRELLIS.2-4B) image-to-3D model. Give it a picture, get back a
-UV-textured, PBR GLB. There is no Python and no PyTorch at runtime.
+UV-textured, PBR GLB. The engine has no Python and no PyTorch at runtime; the helper tools around it are optional Python scripts.
 
 We run it on a Windows PC with an RTX 4070 SUPER and an RTX 3060 Ti, so most of the engineering here is about keeping both
 cards busy: a multithreaded CPU post-processing stage, a parallel batch runner, and an opt-in draft-then-refine seed picker.
@@ -100,13 +100,18 @@ changes are tested. `trellis-server` keeps the engine resident behind a small HT
 
 ## From a prompt to a model
 
-The engine itself reads a picture, not text. To go from a prompt to a 3D model, put any text-to-image model in front of it:
+The engine itself reads a picture, not text. [`tools/prompt-to-model/`](tools/prompt-to-model/README.md) puts a local
+text-to-image model in front of it, so a sentence goes in and a textured GLB comes out. It is a small Python tool (standard
+library only) that asks a ComfyUI you already run for a single-object picture, then hands that picture to `trellis-cli`:
 
-1. Generate a clean, single-object picture from your prompt (an isolated subject on a plain background works best).
-2. Run it through `trellis-cli -i picture.png -o model.glb -m /path/to/gguf` as in [Quick start](#quick-start).
+```bash
+python tools/prompt-to-model/prompt_to_model.py "a weathered wooden treasure chest with iron bands" \
+  --models /path/to/gguf --cli build/trellis-cli --comfy-url http://127.0.0.1:8188 -o out/chest
+```
 
-We do this on our own machine with a local text-to-image model feeding the same engine, so a sentence goes in and a
-textured GLB comes out. That prompt step is not part of this repository.
+Two image models are wired up, FLUX.2-klein-4B and Z-Image-Turbo (both Apache-2.0). Their weights are not part of this
+repository; the tool's README lists the files ComfyUI needs. You can also skip it and feed the engine any picture, as in
+[Quick start](#quick-start).
 
 ## What ArcticMint adds
 
@@ -124,6 +129,10 @@ textured GLB comes out. That prompt step is not part of this repository.
   serial run. Optional extras, off by default: a second generation lane on the other GPU (`--gen-lanes 2`), a live priority
   queue (`--queue-dir`, with `submit` and `close`), longest-first ordering (`--order longest-first`), and a cooperative GPU lock
   (`--gpulock`, `--phase-lock`, `--slot-yield`). The VRAM preflight check is on by default; `--no-preflight` skips it.
+- **Prompt-to-model command** ([`tools/prompt-to-model/`](tools/prompt-to-model/README.md), Python standard library only). Makes
+  the picture from a text prompt through a local ComfyUI (FLUX.2-klein-4B or Z-Image-Turbo), then runs `trellis-cli` on it, and
+  keeps the picture, the GLB and a small JSON record together. `--picture-only --count N` makes several seeds to choose from.
+  Tested against a fake ComfyUI and a fake engine; a real run on a GPU machine is still pending.
 - **Draft-then-refine seed picking** (opt-in, [`tools/arctic-batch/draft_refine.py`](tools/arctic-batch/draft_refine.py)). For each
   prop it queues cheap res-512 drafts of several candidate images or seeds, scores the drafts with a judge command you supply
   (`size_judge.py` is an example that checks the model's proportions against an expected W,D,H), and only fully generates the

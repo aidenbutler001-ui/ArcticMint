@@ -1,15 +1,15 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 950 400" width="950" role="img" aria-label="ArcticMint pipeline: optional prompt and text-to-image model, then RGB image, BiRefNet, DINOv3, three flow stages, CPU post-processing, GLB">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 950 400" width="950" role="img" aria-label="ArcticMint pipeline: text prompt, picture from ComfyUI, then RGB image, BiRefNet, DINOv3, three flow stages, CPU post-processing, GLB">
 <defs><marker id="a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0L10 5L0 10z" fill="#555"/></marker></defs>
 <rect width="950" height="400" rx="12" fill="#ffffff"/>
 <g font-family="Segoe UI, Helvetica, Arial, sans-serif" text-anchor="middle" fill="#1f2328">
-<rect x="20" y="40" width="190" height="70" rx="10" fill="#fff" stroke="#8b8b8b" stroke-width="2" stroke-dasharray="6 4"/>
+<rect x="20" y="40" width="190" height="70" rx="10" fill="#f3effb" stroke="#7a5bb5" stroke-width="2"/>
 <text x="115.0" y="70.0" font-size="15" font-weight="600">Text prompt</text>
-<text x="115.0" y="90.0" font-size="12" font-weight="400">optional, outside this repo</text>
-<rect x="260" y="40" width="190" height="70" rx="10" fill="#fff" stroke="#8b8b8b" stroke-width="2" stroke-dasharray="6 4"/>
-<text x="355.0" y="70.0" font-size="15" font-weight="600">Text-to-image model</text>
-<text x="355.0" y="90.0" font-size="12" font-weight="400">optional, outside this repo</text>
+<text x="115.0" y="90.0" font-size="12" font-weight="400">tools/prompt-to-model</text>
+<rect x="260" y="40" width="190" height="70" rx="10" fill="#f3effb" stroke="#7a5bb5" stroke-width="2"/>
+<text x="355.0" y="70.0" font-size="15" font-weight="600">Picture from ComfyUI</text>
+<text x="355.0" y="90.0" font-size="12" font-weight="400">FLUX.2-klein or Z-Image</text>
 <rect x="500" y="40" width="190" height="70" rx="10" fill="#e8f1fb" stroke="#2f6db5" stroke-width="2"/>
-<text x="595.0" y="80.0" font-size="15" font-weight="600">RGB image</text>
+<text x="595.0" y="80.0" font-size="15" font-weight="600">Picture (RGB image)</text>
 <rect x="740" y="40" width="190" height="70" rx="10" fill="#eaf6f1" stroke="#2c8a6b" stroke-width="2"/>
 <text x="835.0" y="70.0" font-size="15" font-weight="600">BiRefNet</text>
 <text x="835.0" y="90.0" font-size="12" font-weight="400">background removal</text>
@@ -30,8 +30,8 @@
 <text x="115.0" y="370.0" font-size="12" font-weight="400">weld, remesh, UVs, bake</text>
 <rect x="260" y="320" width="190" height="70" rx="10" fill="#e8f1fb" stroke="#2f6db5" stroke-width="2"/>
 <text x="355.0" y="360.0" font-size="15" font-weight="600">UV-textured GLB</text>
-<line x1="210" y1="75.0" x2="258" y2="75.0" stroke="#555" stroke-width="2" stroke-dasharray="6 4" marker-end="url(#a)"/>
-<line x1="450" y1="75.0" x2="498" y2="75.0" stroke="#555" stroke-width="2" stroke-dasharray="6 4" marker-end="url(#a)"/>
+<line x1="210" y1="75.0" x2="258" y2="75.0" stroke="#555" stroke-width="2" marker-end="url(#a)"/>
+<line x1="450" y1="75.0" x2="498" y2="75.0" stroke="#555" stroke-width="2" marker-end="url(#a)"/>
 <line x1="690" y1="75.0" x2="738" y2="75.0" stroke="#555" stroke-width="2" marker-end="url(#a)"/>
 <line x1="835.0" y1="110" x2="835.0" y2="178" stroke="#555" stroke-width="2" marker-end="url(#a)"/>
 <line x1="740" y1="215.0" x2="692" y2="215.0" stroke="#555" stroke-width="2" marker-end="url(#a)"/>

@@ -26,5 +26,6 @@ __pycache__/
 /.codex/
 *.glb
 !assets/showcase/*/*.glb
+!assets/upstream-examples/*/*.glb
 *.tmp
 dumps/

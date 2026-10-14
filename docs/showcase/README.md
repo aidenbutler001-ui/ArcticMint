@@ -16,10 +16,10 @@ How each one was made:
 
 | | Prompt (before the framing words) | Picture seed | Engine time | Files |
 |---|---|---|---|---|
-| Diving helmet | antique brass deep-sea diving helmet with riveted seams, round glass portholes and a bolted collar, aged patina, hard-surface prop, game asset | 11 | 13 min | [render](diving-helmet.jpg), [picture to model](diving-helmet-picture-to-model.jpg), [GLB](../../assets/showcase/diving-helmet/diving-helmet.glb) |
-| Stone lantern | mossy carved stone garden lantern on a square base, weathered granite with green moss and lichen, chunky simple forms, game asset | 33 | 11 min | [render](stone-lantern.jpg), [picture to model](stone-lantern-picture-to-model.jpg), [GLB](../../assets/showcase/stone-lantern/stone-lantern.glb) |
-| Mushrooms | cluster of three fat forest mushrooms with warm brown caps and cream stems, tiny moss at the base, stylized organic prop, game asset | 11 | 14 min | [render](mushrooms.jpg), [picture to model](mushrooms-picture-to-model.jpg), [GLB](../../assets/showcase/mushrooms/mushrooms.glb) |
-| Teapot | glazed ceramic teapot with a hand-painted blue floral pattern, curved spout and handle, small lid knob, game asset | 22 | 12 min | [render](teapot.jpg), [picture to model](teapot-picture-to-model.jpg), [GLB](../../assets/showcase/teapot/teapot.glb) |
+| Diving helmet | antique brass deep-sea diving helmet with riveted seams, round glass portholes and a bolted collar, aged patina, hard-surface prop, game asset | 11 | 13 min | [render](diving-helmet.jpg), [picture and render](diving-helmet-picture-to-model.jpg), [GLB](../../assets/showcase/diving-helmet/diving-helmet.glb) |
+| Stone lantern | mossy carved stone garden lantern on a square base, weathered granite with green moss and lichen, chunky simple forms, game asset | 33 | 11 min | [render](stone-lantern.jpg), [picture and render](stone-lantern-picture-to-model.jpg), [GLB](../../assets/showcase/stone-lantern/stone-lantern.glb) |
+| Mushrooms | cluster of three fat forest mushrooms with warm brown caps and cream stems, tiny moss at the base, stylized organic prop, game asset | 11 | 14 min | [render](mushrooms.jpg), [picture and render](mushrooms-picture-to-model.jpg), [GLB](../../assets/showcase/mushrooms/mushrooms.glb) |
+| Teapot | glazed ceramic teapot with a hand-painted blue floral pattern, curved spout and handle, small lid knob, game asset | 22 | 12 min | [render](teapot.jpg), [picture and render](teapot-picture-to-model.jpg), [GLB](../../assets/showcase/teapot/teapot.glb) |
 
 ## What to expect
 

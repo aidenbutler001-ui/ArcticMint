@@ -1,11 +1,9 @@
-# Arctic: multithreaded CPU post-processing (`claude/arctic-post-mt`)
+# Multithreaded CPU post-processing
 
-Repo: `aidenbutler001-ui/ArcticMint` (private, standalone). This work started in the old public fork
-`ArcticMint_trellis.cpp` (merged there as PR #2; see `docs/arctic/pr-history.md`); that fork is being deleted.
+ArcticMint's own work, started in an earlier fork (see [`pr-history.md`](pr-history.md)).
 
 Goal: make weld / hole fill / BVH / remesh / clean much faster using sort-based flat data structures and `std::thread`,
-with output byte-identical to the original code. Plan and profile: project repo
-`research/notes/arctic-post-profile.md`.
+with output byte-identical to the original code.
 
 ## Switches
 
@@ -53,7 +51,7 @@ part is the edge use-count map (25-35 s at 16.5M faces); the boundary set itself
 
 `TRELLIS_POST_CANON_HOLES=1` finds the boundary edges with a parallel sorted edge CSR (`post::boundary_edges`) and
 processes loops in ascending vertex id (so a loop starts at its smallest vertex). Default is still the legacy
-order and is byte-identical to before. **Re-baselining to the canonical order needs Aiden's approval.**
+order and is byte-identical to before. **Re-baselining to the canonical order is a maintainer decision and has not been taken.**
 
 Measured on d1024 (4.98M raw faces, same hole set both ways):
 

@@ -1,6 +1,17 @@
-# ArcticMint
+<h1 align="center">ArcticMint</h1>
 
-**Image in, textured 3D model out, all in native C++.** ArcticMint is a C++/[ggml](https://github.com/ggml-org/ggml) port of
+<p align="center"><b>Image in, textured 3D model out, all in native C++.</b><br>
+MIT licensed &middot; C++17 &middot; ggml &middot; CUDA, Vulkan, ROCm, Metal</p>
+
+<p align="center">
+<a href="#quick-start">Quick start</a> &middot;
+<a href="#what-arcticmint-adds">What it adds</a> &middot;
+<a href="docs/README.md">Docs</a> &middot;
+<a href="ROADMAP.md">Roadmap</a> &middot;
+<a href="NOTICE.md">Credits</a>
+</p>
+
+ArcticMint is a C++/[ggml](https://github.com/ggml-org/ggml) port of
 Microsoft's [TRELLIS.2-4B](https://huggingface.co/microsoft/TRELLIS.2-4B) image-to-3D model. Give it a picture, get back a
 UV-textured, PBR GLB. There is no Python and no PyTorch at runtime.
 
@@ -130,11 +141,13 @@ python tools/arctic-batch/arctic_batch.py compare out/serial out/batch     # PAS
 
 ## Roadmap
 
-Progress is tracked in [`ROADMAP.md`](ROADMAP.md), and notes on work done in this repo are under [`docs/arctic/`](docs/arctic/).
+Progress is tracked in [`ROADMAP.md`](ROADMAP.md), and notes on work done in this repo are under [`docs/arctic/`](docs/arctic/) (index: [`docs/README.md`](docs/README.md)).
 The one open item there is attention scaling at very high token counts (around 45k tokens), where ggml's FlashAttention trails a
 varlen-style kernel.
 
 ## Licences and credits
+
+Full list in [`NOTICE.md`](NOTICE.md); the essentials:
 
 - **ArcticMint / trellis.cpp** is released under the **MIT licence**, Copyright (c) 2026 Piotr Wilkin. See [`LICENSE`](LICENSE).
   ArcticMint is derived from [pwilkin/trellis.cpp](https://github.com/pwilkin/trellis.cpp).

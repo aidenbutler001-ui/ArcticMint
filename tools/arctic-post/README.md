@@ -1,9 +1,15 @@
-# arctic-post: CPU post-processing harness (ArcticMint only)
+# arctic-post
 
-Tools for profiling and speeding up trellis.cpp's CPU post-processing (weld → fill holes → remesh → clean → decimate →
-UV/bake → GLB) without a GPU and without ggml. The profile and the plan are in the project repo
-(`aidenbutler001-ui/expiramental3d`, branch `claude/lucid-hopper-9wbryp`): `research/notes/arctic-post-profile.md`
-and `research/notes/phase0-cpu-bottleneck.md`.
+A standalone harness for ArcticMint's CPU post-processing (weld, fill holes, remesh, clean, decimate, UV/bake, GLB). It
+builds and runs without a GPU and without ggml, so post-processing changes can be profiled and tested on any machine.
+Design notes for the multithreaded stages are in [`docs/arctic/post-mt.md`](../../docs/arctic/post-mt.md).
+
+## Contents
+
+- [Standalone build and tools](#standalone-build-and-tools)
+- [PC verification](#pc-verification-pc-verifyps1-windows-msvc--cuda)
+
+## Standalone build and tools
 
 - `CMakeLists.txt`: a standalone Release build of the post stages, `post-replay` and `edgebench`. It doesn't need the
   `thirdparty/ggml` submodule.
@@ -12,7 +18,7 @@ and `research/notes/phase0-cpu-bottleneck.md`.
   ```
 - `gen_dump.py` (numpy): writes a synthetic `--dump-post` file. It meshes a noisy, chest-like SDF on an N³ grid with
   surface nets (the same topology class as FlexiDualGrid), then injects near-duplicate vertices, holes, flipped
-  blocks and floaters, plus a sparse PBR volume. At N=1024 it gives a raw mesh of ~17M faces, close to the PC's 16.5M.
+  blocks and floaters, plus a sparse PBR volume. At N=1024 it gives a raw mesh of ~17M faces, close to the 16.5M faces seen on a real 1024 run.
   ```
   python3 tools/arctic-post/gen_dump.py d.bin --N 1024 --pbr-res 512
   build-post/post-replay d.bin out.glb --geometry-res 1024 --band 2 --faces 300000
@@ -21,16 +27,16 @@ and `research/notes/phase0-cpu-bottleneck.md`.
 - `edgebench.cpp`: a microbenchmark of edge counting with `unordered_map` versus sort-based methods, used for the profile.
 
 The synthetic meshes are box-like, and their defect rates are invented. Validate every change on real dumps from
-the PC (`trellis-cli ... --dump-post PATH`) before trusting the timings.
+a real machine (`trellis-cli ... --dump-post PATH`) before trusting the timings.
 
 ## PC verification: `pc-verify.ps1` (Windows, MSVC + CUDA)
 
-One script that builds ArcticMint on the PC, makes two real dumps, replays them three ways and says PASS/FAIL per asset.
+One script that builds ArcticMint on a Windows machine, makes two real dumps, replays them three ways and says PASS/FAIL per asset.
 
-**Not run in the cloud.** It was written without a Windows machine, an NVIDIA GPU or PowerShell 5.1. It was only
+**Not yet run on real hardware.** It was written without a Windows machine, an NVIDIA GPU or PowerShell 5.1. It was only
 parse-checked, and its helper functions (argument quoting, hash/timing parsing, timestamp-masked GLB hash, the logged
 process runner with timeout and peak-RSS sampling) were exercised on PowerShell 7 under Linux against real logs. The
-build, `nvidia-smi` and GPU parts have never executed, so expect to fix small things on the first run. A static review by a Sonnet subagent found no definite breakers; its might-break items
+build, `nvidia-smi` and GPU parts have never executed, so expect to fix small things on the first run. A static review found no definite breakers; its might-break items
 (x64 MSVC check, null `ExitCode`, `-Ref` with untracked output, unreadable `nvidia-smi` values, trailing-backslash paths,
 CUDA bin dir with `-SkipBuild`, timeout killing the process tree) were fixed. It stops at the
 first failure and prints which log to read.
@@ -38,13 +44,13 @@ first failure and prints which log to read.
 ```
 powershell -ExecutionPolicy Bypass -File tools\arctic-post\pc-verify.ps1
 powershell -ExecutionPolicy Bypass -File tools\arctic-post\pc-verify.ps1 -Ref claude/arctic-post-mt -FrontOnly
-powershell -ExecutionPolicy Bypass -File tools\arctic-post\pc-verify.ps1 -SkipBuild -SkipDump -OutDir D:\pv\last
+powershell -ExecutionPolicy Bypass -File tools\arctic-post\pc-verify.ps1 -SkipBuild -SkipDump -OutDir out\pv-last
 ```
 
 What it does, in order:
 1. Preflight: git, cmake, ninja, nvcc, nvidia-smi; imports the MSVC x64 environment (vswhere + vcvars64) if `cl.exe`
-   is not on PATH; checks the models dir (`C:\AI\trellis\models`) and the phase0 images
-   (`C:\AI\Expiramental3d\phase0\images`: `hard_03_log_cabin`, `hard_02_treasure_chest`, png/jpg/webp).
+   is not on PATH; checks the models directory (`-ModelsDir`) and the test images (`-ImagesDir`, names given with `-Images`; png, jpg
+   or webp). Both are parameters at the top of the script; set them for your machine.
 2. Optional `-Ref` checkout (needs a clean tree), `git submodule update --init --recursive`.
 3. Configure + build like the Windows CUDA job in `.github/workflows/release.yml`
    (`-G Ninja -DCMAKE_BUILD_TYPE=Release -DGGML_CUDA=ON -DCMAKE_CUDA_ARCHITECTURES=86;89 -DGGML_OPENMP=OFF`, override
@@ -74,11 +80,13 @@ Verdict per asset: **PASS** if the vertex/face hashes of `input, weld, fill_smal
 drop_components` are identical in all three runs and, unless `-FrontOnly`, so are `decimate_qem, weld2, fill2, drop2`
 and the GLB SHA-256. **FAIL** otherwise (`FAIL (tail only)` if only the post-QEM part differs: then look at the GPU QEM,
 xatlas and the GLB writer before the post-MT code). The GLB is compared with its `"generated"` timestamp zeroed: that
-field changes on every run, even for the untouched original code (checked in the cloud: with it masked, full-run GLBs
+field changes on every run, even for the untouched original code (checked on a Linux build: with it masked, full-run GLBs
 are byte-identical at 1 and 4 threads and with `TRELLIS_POST_LEGACY=1`).
 
 Tail tolerance: if only the tail differs (GPU QEM is non-deterministic), each tail stage is compared with the legacy run on face count (`-TailFaceTolPct`, default 0.5%) and surface area (`-TailAreaTolPct`, default 0.1%): within both = `PASS (front exact; tail within ...)`, outside = `FAIL (tail outside tolerance)`. The `drop2` stage has its own limits (`-Drop2FaceTolPct` 7%, `-Drop2AreaTolPct` 2%): it drops components under 3% of the largest one, so a 0.01% QEM difference moves whole components across the threshold (log cabin, same card: two identical runs differ by 0.59% faces / 0.40% area there, and 1.14% / 1.08% against legacy, with every earlier stage under 0.1% / 0.005%). Hausdorff distance is not checked by the script.
 
-Needs: Windows 10/11, Visual Studio Build Tools (C++ x64), CMake, Ninja (or the one VS ships), a CUDA toolkit with its
+## Requirements
+
+Windows 10/11, Visual Studio Build Tools (C++ x64), CMake, Ninja (or the one VS ships), a CUDA toolkit with its
 bin dir on PATH or `CUDA_PATH`, git, ~15 GB free disk (build + ggml + two dumps of 0.3-0.6 GB), and an idle GPU 1.
-Typical run time: build 20-40 min, then roughly 25-40 min per asset in the default `Raw` mode (full CLI run plus three replays).
+Typical run time (one machine): build 20-40 min, then roughly 25-40 min per asset in the default `Raw` mode (full CLI run plus three replays).

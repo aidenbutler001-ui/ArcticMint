@@ -1,9 +1,9 @@
-# model-viewer GLB preview harness
+# mv_preview
 
-Renders GLB previews with the same Three.js-based `<model-viewer>` component the
-Lemonade desktop app uses (`src/app/src/renderer/vendor/model-viewer.min.js`),
-giving true PBR output (environment lighting, metallic-roughness) instead of the
-flat-shaded Python rasterizer in `render_glb.py` / `render_glb_fast.py`.
+A small harness that renders GLB previews with the Three.js-based `<model-viewer>` component, the same one the desktop app
+in `app/` vendors (a copy is in this folder). It gives true PBR output (environment lighting,
+metallic-roughness) rather than a flat-shaded rasterizer. It was used to render the showcase gallery
+(`render_quad.js`). Inherited from upstream trellis.cpp and not separately tested in ArcticMint.
 
 ## Usage
 

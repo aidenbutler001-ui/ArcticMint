@@ -1,31 +1,54 @@
-# Getting started with Trellis Studio
+# Getting started
 
-**Trellis Studio** is a desktop app that runs Microsoft TRELLIS.2 image→3D
-reconstruction locally (via `trellis.cpp`) and previews the result in an
-interactive 3D viewer. This guide gets a brand-new machine from zero to a
-generated `.glb`.
+Two ways to get from zero to a generated `.glb`:
 
-## One-command install
+| Route | Use it when | Status in ArcticMint |
+|-------|-------------|----------------------|
+| **[Build from source](#build-from-source)** | you want ArcticMint itself, including its post-processing and batch tools | the tested route |
+| **[Installer and desktop app](#installer-and-desktop-app-inherited)** | you want a point-and-click app | inherited from upstream, not tested here |
 
-The installer auto-detects your GPU runtime (**CUDA → ROCm → Vulkan** fallback),
+## Build from source
+
+Follow the build steps and the `trellis-cli` example in the [README](../README.md#quick-start), then:
+
+```bash
+./build/trellis-cli -i assets/goblin.png -o out/goblin.glb -m /path/to/gguf --seed 42
+```
+
+For more than a handful of images see [`tools/arctic-batch`](../tools/arctic-batch/README.md). Add `-v` for per-stage timings.
+
+## Installer and desktop app (inherited)
+
+> **Inherited, untested here.** The installer scripts, the desktop app ("Trellis Studio", in `app/`), the portable build and
+> everything below this heading come from [pwilkin/trellis.cpp](https://github.com/pwilkin/trellis.cpp). The commands below
+> download **upstream's** release builds, not builds of ArcticMint, so they will not include ArcticMint's additions.
+> They are kept because the scripts live in this repository (`install/`) and work against upstream's releases.
+> ArcticMint's own testing is on Windows with CUDA via the CLI.
+
+**Trellis Studio** is a desktop app that runs TRELLIS.2 image-to-3D generation locally and previews the result in an
+interactive 3D viewer.
+
+### One-command install
+
+The installer auto-detects your GPU runtime (**CUDA, then ROCm, then Vulkan** fallback),
 downloads the matching `trellis-server` build plus the ~16.5 GB of model weights,
 installs the desktop app, and writes the config the app reads on launch.
 
-### Linux (x86-64)
+#### Linux (x86-64)
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/pwilkin/trellis.cpp/main/install/install.sh | bash
 ```
 
-### Windows (x64), in PowerShell
+#### Windows (x64), in PowerShell
 
 ```powershell
 irm https://raw.githubusercontent.com/pwilkin/trellis.cpp/main/install/install.ps1 | iex
 ```
 
-That's it — launch **Trellis Studio**, drop in an image, and click **Generate 3D**.
+Then launch **Trellis Studio**, drop in an image, and click **Generate 3D**.
 
-## What gets installed where
+### What gets installed where
 
 | what | Linux | Windows |
 |------|-------|---------|
@@ -34,7 +57,7 @@ That's it — launch **Trellis Studio**, drop in an image, and click **Generate 
 | app config | `~/.config/trellis-studio/config.json` | `%APPDATA%\trellis-studio\config.json` |
 | desktop app | `.AppImage` in the install dir | installed via the setup .exe (Start menu) |
 
-## Installer options
+### Installer options
 
 Both scripts accept the same flags (`--flag value` on Linux, `-Flag value` on
 Windows):
@@ -58,17 +81,17 @@ Examples:
 ./install/install.sh --backend vulkan --models-dir /mnt/ssd/trellis --skip-models
 ```
 
-## Backend detection
+### Backend detection
 
 - **NVIDIA** → CUDA (the bundle ships the CUDA runtime; nothing else needed).
 - **AMD / Intel / everything else** → **Vulkan**, which is self-contained and, on
-  the validated Strix Halo iGPU, actually the fastest backend. The installer
+  the Strix Halo iGPU upstream validated, the fastest backend there. The installer
   notes when an AMD card is ROCm-capable.
 - **ROCm** is opt-in with `--backend rocm`. The published ROCm bundle needs a
   matching TheRock ROCm 7.x runtime on your library path (`LD_LIBRARY_PATH` /
   `PATH`); if the server won't start, re-run with `--backend vulkan`.
 
-## Using the app
+### Using the app
 
 1. **Drop or pick an image** (or paste from the clipboard).
 2. Adjust **Resolution** (512 light / 1024 cascade / 1536 high), **seed**,
@@ -78,7 +101,7 @@ Examples:
 5. Every result is saved to a local **gallery** (IndexedDB) — click a thumbnail to
    reload it, even after restarting the app.
 
-## No app? Use it in a browser
+### No app? Use it in a browser
 
 The UI is a plain web bundle, so you can skip the desktop app entirely:
 
@@ -91,7 +114,7 @@ The UI is a plain web bundle, so you can skip the desktop app entirely:
 then open the built UI (or `npm run dev` in `app/`) and point it at
 `127.0.0.1:8080` in **Settings**.
 
-## Portable (no-install)
+### Portable (no-install)
 
 Prefer not to install anything? Grab the portable archive from the releases page
 instead of running an installer:
@@ -107,7 +130,7 @@ folder and the GGUFs into `models/` (or point it at existing ones in Settings),
 and you're set. Delete the folder to uninstall. (Linux still needs system
 `webkit2gtk-4.1`.)
 
-## Where are the logs?
+### Where are the logs?
 
 Every server launch is written to a timestamped log file (the last 20 are kept):
 
@@ -120,7 +143,7 @@ Open the folder straight from **Settings → Server logs → Open**. The log rec
 the exact `--models` path, GPU index and backend the server was launched with,
 plus its full stdout/stderr — attach the newest file to a bug report.
 
-## Troubleshooting
+### Troubleshooting
 
 - **"Server is offline"** right after generating — the pipeline is still loading
   the models; large weights take a moment on the first request.

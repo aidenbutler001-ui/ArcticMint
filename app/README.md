@@ -1,11 +1,15 @@
-# Trellis Studio
+# Trellis Studio (desktop app)
 
-Desktop app (Tauri v2) for local image→3D generation with
-[trellis.cpp](../). It wraps the resident `trellis-server`, drives the
+> **Inherited, untested here.** This app comes from [pwilkin/trellis.cpp](https://github.com/pwilkin/trellis.cpp) and is kept
+> in the tree unchanged. ArcticMint's own testing is the `trellis-cli` route on Windows with CUDA; the app, its installers and
+> the release workflow that publishes it have not been exercised by us. The names (`trellis-studio`, `trellis-server`) are
+> upstream's.
+
+Desktop app (Tauri v2) for local image-to-3D generation with the engine in this repository. It wraps the resident `trellis-server`, drives the
 image→3D pipeline, and previews the result in an interactive
 `<model-viewer>` (three.js) viewer with a locally-persisted gallery.
 
-For end users: see [`docs/getting-started.md`](../docs/getting-started.md) — you
+End users: see [`docs/getting-started.md`](../docs/getting-started.md). You
 don't need this directory unless you're developing the app.
 
 ## Architecture
@@ -40,7 +44,7 @@ npm run dev
 ```
 
 Requires Node 20+, a Rust toolchain, and the Tauri v2 Linux deps
-(`libwebkit2gtk-4.1-dev` etc. — see `.github/workflows/release.yml`).
+(`libwebkit2gtk-4.1-dev` etc.; see `.github/workflows/release.yml`).
 
 ## Build
 

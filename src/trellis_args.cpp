@@ -112,6 +112,8 @@ void print_usage(const char* argv0, bool server) {
         "  -v, --verbose           per-stage timings, graph node counts, and a heartbeat\n"
         "                          while a backend compute is running (TRELLIS_VERBOSE=1;\n"
         "                          =2 also dumps the per-op histogram of each graph)\n"
+        "      --stage-timing      print a per-stage wall-clock table when the run ends\n"
+        "                          (TRELLIS_STAGE_TIMING=1); output is otherwise unchanged\n"
         "  -s, --seed N            RNG seed                     (default 42)\n"
         "      --steps N           flow sampler steps (default 12). Lower is faster and\n"
         "                          rougher; useful for backend bring-up, where a CPU and\n"
@@ -219,6 +221,7 @@ bool parse_args(int argc, char** argv, TrellisParams& p) {
         else if (a == "--backend")              { const char* v = need(a.c_str()); if (!v) return false; p.backend = v; }
         else if (a == "-t" || a == "--threads") { const char* v = need(a.c_str()); if (!v) return false; p.threads = atoi(v); }
         else if (a == "-v" || a == "--verbose") { p.verbose = true; }
+        else if (a == "--stage-timing")         { p.stage_timing = true; }
         else if (a == "--steps")                { const char* v = need(a.c_str()); if (!v) return false; p.steps = atoi(v); }
         else if (a == "--steps-ss")             { const char* v = need(a.c_str()); if (!v) return false; p.steps_ss = atoi(v); }
         else if (a == "--sched")                { const char* v = need(a.c_str()); if (!v) return false;

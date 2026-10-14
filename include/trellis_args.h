@@ -118,6 +118,7 @@ struct TrellisParams {
                                 // op-coverage accelerators like the Hexagon NPU.
     int  vulkan_fallback = -1;   // add Vulkan between HTP and CPU: -1 environment/default,
                                 // 0 disabled, 1 enabled
+    bool stage_timing = false;  // --stage-timing: print a per-stage wall-clock table at the end
     bool verbose = false;       // --verbose: per-stage timings, graph shapes, and a
                                 // heartbeat while a backend compute is in flight
 

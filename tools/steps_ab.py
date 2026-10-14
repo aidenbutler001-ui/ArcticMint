@@ -2,11 +2,12 @@
 """A/B the flow step count: arm A = --steps 24 (standing rule), arm B = --steps 12 --steps-ss 24.
 
 For each piece and seed it runs trellis-cli once per arm, then records wall time, the
-per-stage table from --stage-timing, mesh/UV metrics (tools/glb_metrics.py) and a colour check:
-visible-surface brightness of the baked base texture against the source picture's foreground,
-using the same ratio and 0.6..1/0.6 window as the engine's --tex-reroll check (the dark-brown
-failure). Nothing here changes the engine's texture stage; the colour check is read from the
-output _base.png after the run, so --tex-reroll is left off in both arms.
+per-stage table from --stage-timing and a colour check: brightness of the VISIBLE surface of the
+output GLB against the source picture's foreground, using the same ratio and 0.6..1/0.6 window as
+the engine's --tex-reroll check (the dark-brown failure). Up to ~73% of the atlas can be hidden
+interior faces, so the atlas mean is not used: faces are kept only if some outside view sees them
+(point-splat depth test over 26 directions) and weighted by area. Nothing here changes the engine's
+texture stage; the check reads the finished GLB, so --tex-reroll is left off in both arms.
 
 This script launches trellis-cli. On the PC run it only from the queue, under the gpulock tooling
 and after the usual go. Use --prefix to wrap each command (for example the gpulock launcher).
@@ -36,7 +37,7 @@ def luminance(r, g, b):
 
 
 def mean_luma(path):
-    """Alpha-weighted mean luminance (0..1) over texels with alpha >= 128; None if unreadable."""
+    """Alpha-weighted mean luminance (0..1) of a foreground picture (texels with alpha >= 128)."""
     try:
         from PIL import Image
     except ImportError:
@@ -49,6 +50,100 @@ def mean_luma(path):
         y += (a / 255.0) * luminance(r, g, b) / 255.0
         w += a / 255.0
     return y / w if w else None
+
+
+def load_glb(path):
+    """First primitive of a GLB: positions, uvs, triangle indices, base colour texture (H,W,3 uint8)."""
+    import io
+    import struct
+    import numpy as np
+    from PIL import Image
+    d = Path(path).read_bytes()
+    if d[:4] != b"glTF":
+        raise ValueError("not a GLB file")
+    jl = struct.unpack_from("<I", d, 12)[0]
+    J = json.loads(d[20:20 + jl])
+    p = 20 + jl
+    bl = struct.unpack_from("<I", d, p)[0]
+    BIN = d[p + 8:p + 8 + bl]
+
+    def acc(i):
+        a = J["accessors"][i]
+        bv = J["bufferViews"][a["bufferView"]]
+        dt = {5126: "<f4", 5125: "<u4", 5123: "<u2"}[a["componentType"]]
+        nc = {"SCALAR": 1, "VEC2": 2, "VEC3": 3}[a["type"]]
+        off = bv.get("byteOffset", 0) + a.get("byteOffset", 0)
+        return np.frombuffer(BIN, dtype=dt, count=a["count"] * nc, offset=off).reshape(a["count"], nc)
+
+    prim = J["meshes"][0]["primitives"][0]
+    P = acc(prim["attributes"]["POSITION"]).astype(np.float64)
+    UV = acc(prim["attributes"]["TEXCOORD_0"]).astype(np.float64)
+    I = acc(prim["indices"]).reshape(-1, 3).astype(np.int64)
+    bv = J["bufferViews"][J["images"][0]["bufferView"]]
+    o = bv.get("byteOffset", 0)
+    tex = np.array(Image.open(io.BytesIO(BIN[o:o + bv["byteLength"]])).convert("RGB"))
+    return P, UV, I, tex
+
+
+def _view_dirs():
+    import numpy as np
+    v = [(x, y, z) for x in (-1, 0, 1) for y in (-1, 0, 1) for z in (-1, 0, 1) if (x, y, z) != (0, 0, 0)]
+    v = np.array(v, float)
+    return v / np.linalg.norm(v, axis=1, keepdims=True)   # 6 axes + 12 edges + 8 corners
+
+
+def visible_faces(P, I, res=None, tol_cells=2.0):
+    """Boolean per face: seen from outside in at least one of 26 directions.
+
+    Face centroids are splatted into a res x res depth buffer per direction; a face is visible if its
+    depth is within tol_cells pixels of the nearest depth in its 3x3 neighbourhood. Interior faces are
+    always behind an outer shell, so they never pass."""
+    import numpy as np
+    C = P[I].mean(axis=1)
+    vis = np.zeros(len(I), bool)
+    if res is None:   # a few centroids per pixel on the outer shell, so the depth buffer has no holes
+        res = int(min(512, max(32, math.sqrt(len(I)) / 3.0)))
+    for d in _view_dirs():
+        a = np.cross(d, (0, 0, 1) if abs(d[2]) < 0.9 else (1, 0, 0))
+        a /= np.linalg.norm(a)
+        b = np.cross(d, a)
+        x, y, z = C @ a, C @ b, C @ d          # larger z = nearer the camera
+        ext = max(np.ptp(x), np.ptp(y), 1e-9)
+        cell = ext / (res - 1)
+        ix = np.clip(((x - x.min()) / cell).astype(np.int64), 0, res - 1)
+        iy = np.clip(((y - y.min()) / cell).astype(np.int64), 0, res - 1)
+        flat = np.full((res + 2) * (res + 2), -np.inf)
+        np.maximum.at(flat, (iy + 1) * (res + 2) + (ix + 1), z)
+        zb = flat.reshape(res + 2, res + 2)
+        near = zb.copy()
+        for dy in (-1, 0, 1):
+            for dx in (-1, 0, 1):
+                near = np.maximum(near, np.roll(np.roll(zb, dy, 0), dx, 1))
+        vis |= z >= near[iy + 1, ix + 1] - tol_cells * cell
+    return vis
+
+
+def visible_luma_arrays(P, UV, I, tex):
+    """Area-weighted mean luminance (0..1) of the base texture over outside-visible faces."""
+    import numpy as np
+    vis = visible_faces(P, I)
+    if not vis.any():
+        return None
+    Iv = I[vis]
+    area = 0.5 * np.linalg.norm(np.cross(P[Iv[:, 1]] - P[Iv[:, 0]], P[Iv[:, 2]] - P[Iv[:, 0]]), axis=1)
+    uv = UV[Iv].mean(axis=1)
+    h, w = tex.shape[:2]
+    px = tex[np.clip((uv[:, 1] * h).astype(int), 0, h - 1), np.clip((uv[:, 0] * w).astype(int), 0, w - 1)]
+    lum = (0.2126 * px[:, 0] + 0.7152 * px[:, 1] + 0.0722 * px[:, 2]) / 255.0
+    return float((lum * area).sum() / area.sum()) if area.sum() > 0 else None
+
+
+def visible_luma(glb):
+    """Visible-surface brightness of a GLB's base texture; None if numpy/PIL or the GLB can't be read."""
+    try:
+        return visible_luma_arrays(*load_glb(glb))
+    except (ImportError, OSError, ValueError, KeyError):
+        return None
 
 
 def colour_ratio(pic, tex):
@@ -116,8 +211,8 @@ def main(argv=None):
                 p = subprocess.run(cmd, capture_output=True, text=True)
                 wall = time.time() - t0
                 (glb.parent / "run.log").write_text(p.stdout + "\n--- stderr ---\n" + p.stderr)
-                tex = glb.with_name(glb.stem + "_base.png")
-                pic, bright = mean_luma(image), mean_luma(tex) if tex.exists() else None
+                pic = mean_luma(image)
+                bright = visible_luma(glb) if glb.exists() else None
                 ratio = colour_ratio(pic, bright)
                 row = {"piece": name, "seed": seed, "arm": arm, "rc": p.returncode, "wall_s": round(wall, 1),
                        "pic_luma": pic, "tex_luma": bright, "ratio": ratio, "colour_ok": in_window(ratio),

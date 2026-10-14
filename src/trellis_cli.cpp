@@ -606,6 +606,36 @@ int trellis_run(const trellis::TrellisParams& cfg) {
                    dual_pbr_path ? "retained HR shape coords for dual PBR" : "released HR shape coords");
             fflush(stdout);
         }
+        // Opt-in colour-DC steering (TRELLIS_TEX_STEER=<calibration file>, tools/tex_dc_calibrate.py). The texture latent's
+        // brightness is almost one number: its global mean along one direction d (correlation -0.985 with the decoded
+        // brightness over 21 draws of one picture), and the sampler decides it in the first steps. Where the predicted clean
+        // latent's coordinate along d would fall below the one that decodes to TRELLIS_TEX_STEER_FRAC (default 0.3) of the
+        // picture's brightness, shift the prediction up to it (v -= shift*d/t). A no-op for draws not heading for the dark tail.
+        struct TexSteer { std::vector<float> d; double a = 0, b = 0, c_min = 0; bool on = false; int clamped = 0, calls = 0; double max_shift = 0; } steer;
+        if (const char* sc = std::getenv("TRELLIS_TEX_STEER")) {
+            FILE* sf = fopen(sc, "r");
+            char tag[32]; bool ok = sf != nullptr;
+            if (ok) { ok = fscanf(sf, "%31s", tag) == 1 && std::string(tag) == "d"; }
+            if (ok) { steer.d.resize(32); for (int k = 0; k < 32 && ok; ++k) { float f = 0; ok = fscanf(sf, "%f", &f) == 1; steer.d[k] = f; } }
+            if (ok) { ok = fscanf(sf, "%31s", tag) == 1 && std::string(tag) == "fit" && fscanf(sf, "%lf %lf", &steer.a, &steer.b) == 2; }
+            if (sf) fclose(sf);
+            double fy = 0, fa = 0;
+            if (cut_sz > 0 && cutout.size() == (size_t)cut_sz * cut_sz * 4)
+                for (size_t i = 0; i < (size_t)cut_sz * cut_sz; ++i) {
+                    const unsigned char* q = &cutout[4 * i];
+                    if (q[3] < 128) continue;
+                    fy += (0.2126 * q[0] + 0.7152 * q[1] + 0.0722 * q[2]) / 255.0; fa += q[3] / 255.0;
+                }
+            double frac = 0.3;
+            if (const char* e = std::getenv("TRELLIS_TEX_STEER_FRAC")) frac = std::atof(e);
+            if (!ok || steer.b <= 1e-6) fprintf(stderr, "      [tex-steer] disabled: cannot read a calibration (d, fit a b with b > 0) from %s\n", sc);
+            else if (fa <= 0) printf("      [tex-steer] disabled: no foreground cutout to compare with\n");
+            else {
+                const double pic_y = fy / fa;
+                steer.c_min = (frac * pic_y - steer.a) / steer.b; steer.on = true;
+                printf("      [tex-steer] on: picture brightness %.3f, floor %.2f x = %.3f, coordinate floor %.3f\n", pic_y, frac, frac * pic_y, steer.c_min);
+            }
+        }
         auto decode_texture = [&](bool use_mixed) {
             const std::string tflow = M + FP + (use_mixed ? "tex_flow_512.gguf" : (cascade ? "tex_flow_1024.gguf" : "tex_flow_512.gguf"));
             const vector<std::array<int,3>>& tcoords = use_mixed ? coords : shc;
@@ -634,13 +664,30 @@ int trellis_run(const trellis::TrellisParams& cfg) {
                     for (int k = 0; k < 32; ++k) x64[(size_t)k + 64*n]      = st[(size_t)k + 32*n];
                     for (int k = 0; k < 32; ++k) x64[(size_t)32 + k + 64*n] = tslat[(size_t)k + 32*n];
                 }
-                return run->forward(x64, ts, c);
+                vector<float> v = run->forward(x64, ts, c);
+                if (steer.on && ts > 0.f) {
+                    const double t = ts / 1000.0;
+                    double ch = 0;
+                    for (int n = 0; n < tN; ++n) for (int k = 0; k < 32; ++k) ch += steer.d[k] * (st[(size_t)k + 32*n] - t * v[(size_t)k + 32*n]);
+                    ch /= tN; ++steer.calls;
+                    if (ch < steer.c_min) {
+                        const double shift = steer.c_min - ch;
+                        for (int n = 0; n < tN; ++n) for (int k = 0; k < 32; ++k) v[(size_t)k + 32*n] -= (float)(shift * steer.d[k] / t);
+                        ++steer.clamped; steer.max_shift = std::max(steer.max_shift, shift);
+                    }
+                }
+                return v;
             };
             trellis::SamplerParams sp; sp.steps=(cfg.steps>0?cfg.steps:12); sp.guidance_strength=1.0f; sp.guidance_rescale=0.0f; sp.gi0=0.6f; sp.gi1=0.9f; sp.rescale_t=3.0f;
             texlat = trellis::sample_flow(fwd, noise((size_t)32*tN),
                          trellis::FlowCond(tcond, pix ? pc.proj.data()     : nullptr),
                          trellis::FlowCond(tneg,  nullptr), sp);  // [32,tN]
             delete run; m.free();
+            if (steer.on) { printf("      [tex-steer] shifted %d of %d forwards, largest shift %.3f\n", steer.clamped, steer.calls, steer.max_shift); steer.clamped = steer.calls = 0; steer.max_shift = 0; }
+            if (const char* ld = std::getenv("TRELLIS_TEX_LATDUMP")) {   // diagnostic: the normalised texture latent of every draw, raw f32 [tokens, 32]
+                static int ldn = 0; char fn[1024]; snprintf(fn, sizeof fn, "%s_%03d.f32", ld, ldn++);
+                if (FILE* lf = fopen(fn, "wb")) { fwrite(texlat.data(), 4, texlat.size(), lf); fclose(lf); }
+            }
             const bool tex_stats = std::getenv("TRELLIS_TEX_STATS") != nullptr;
             if (tex_stats) {
                 slat_stats("tex flow out (normalised)", texlat);

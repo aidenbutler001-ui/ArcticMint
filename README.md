@@ -53,7 +53,7 @@ default is the **1024 cascade**: a low-resolution `flow_512` pass, an upsample, 
 ## Quick start
 
 Requires CMake, a C++17 compiler, Ninja, and a GPU toolchain for the backend you pick (CUDA, Vulkan SDK or ROCm).
-ggml is vendored under `thirdparty/ggml`.
+ggml is a git submodule at `thirdparty/ggml`, pointing at a fork.
 
 ```bash
 git submodule update --init --recursive
@@ -80,20 +80,21 @@ the source checkpoints yourself with [`tools/convert.py`](tools/convert.py) (det
 | flag | effect |
 |------|--------|
 | `--res 512\|1024\|1536` | geometry resolution (default is the 1024 cascade) |
-| `--seed N` | RNG seed (default 42) |
+| `--seed N` | RNG seed (default: random, logged as `seed N (auto)`; pass a value to reproduce a run) |
 | `--faces N` | QEM decimation target, at least 1000 (default 300K at 1024, 150K at 512) |
 | `--atlas PX` | UV atlas size (default 2048 at 1024) |
-| `--bg-removal threshold\|birefnet` | default is automatic: pre-matted images keep their alpha, otherwise BiRefNet |
+| `--bg-removal threshold\|birefnet` | default is automatic: pre-matted images keep their alpha, otherwise BiRefNet if `birefnet.gguf` is in the models folder, else a threshold matte |
+| `--tex-reroll N` | opt-in colour check, integer 0..16 (default 0 = off; other values are rejected). Redoes only the texture stage up to N times when the decoded brightness is far off the picture's, and keeps the closest draw. Skipped when there is no foreground cutout. `TRELLIS_TEX_REROLL=N` is the fallback when the flag is absent (non-numeric ignored, out-of-range clamped to 0..16); an explicit `--tex-reroll 0` beats it |
 | `--box-uv` | faster box-projection UVs instead of the default xatlas unwrap |
 | `--no-texture` | geometry only |
 | `--gpu N` / `--backend NAME` | pick the device or force a ggml backend; `trellis-devices` lists what the build sees |
 | `--steps N` / `--steps-ss N` | flow sampler steps overall, and for the sparse-structure flow only |
 | `--ss-only` / `--ss-seeds N` | stop after the structure stage and write the voxel bounding box for N seeds, with no mesh |
-| `--dump-post PATH` | write the decoded mesh and voxel PBR volume, then exit, for external post-processing |
+| `--dump-post PATH` | write the welded, filled, remeshed and cleaned mesh and the voxel PBR volume, then exit, for external post-processing |
 | `--require-gpu` | fail instead of falling back to the very slow CPU path |
 | `-v` | per-stage timings |
 
-`post-replay DUMP OUT.glb` re-runs the whole post-processing stage from a dump in seconds, which is how post-processing
+`post-replay DUMP OUT.glb` re-runs the whole post-processing stage from a dump (about 65 s on 24 threads, per the batch README), which is how post-processing
 changes are tested. `trellis-server` keeps the engine resident behind a small HTTP API (`POST /generate`, `GET /health`).
 `--model pixal3d` runs the [Pixal3D](docs/pixal3d/README.md) fine-tune on the same engine.
 
@@ -110,8 +111,9 @@ changes are tested. `trellis-server` keeps the engine resident behind a small HT
   roughly 150 s of GPU generation followed by about 65 s of CPU post on 24 threads, so each side idles while the other works.
   The runner generates on one card while finished dumps are post-processed in a pool, with a bounded queue, per-stage
   timestamps in `batch.csv`, a `batch_report.md` summary and a `compare` command that checks overlap output is hash-equal to a
-  serial run. Optional extras, all off by default: a second generation lane on the other GPU (`--gen-lanes 2`), a live priority
-  queue (`--queue-dir`, with `submit` and `close`), longest-first ordering (`--order longest-first`) and GPU lock/preflight checks.
+  serial run. Optional extras, off by default: a second generation lane on the other GPU (`--gen-lanes 2`), a live priority
+  queue (`--queue-dir`, with `submit` and `close`), longest-first ordering (`--order longest-first`), and a cooperative GPU lock
+  (`--gpulock`, `--phase-lock`, `--slot-yield`). The VRAM preflight check is on by default; `--no-preflight` skips it.
 - **Draft-then-refine seed picking** (opt-in, [`tools/arctic-batch/draft_refine.py`](tools/arctic-batch/draft_refine.py)). For each
   prop it queues cheap res-512 drafts of several candidate images or seeds, scores the drafts with a judge command you supply
   (`size_judge.py` is an example that checks the model's proportions against an expected W,D,H), and only fully generates the
@@ -157,7 +159,7 @@ Full list in [`NOTICE.md`](NOTICE.md); the essentials:
   agreement, which requires the "Built with DINOv3" attribution and that you pass its agreement on to anyone you give these
   weights to. Read and follow the DINOv3 licence before using or redistributing the converted weights.
 - **BiRefNet** ([ZhengPeng7/BiRefNet](https://huggingface.co/ZhengPeng7/BiRefNet)) performs background removal.
-- **ggml** is the tensor library, vendored under `thirdparty/ggml`. Also vendored: stb and xatlas.
+- **ggml** is the tensor library, a git submodule at `thirdparty/ggml` pointing at a fork. Vendored in `thirdparty/`: stb, xatlas, cpp-httplib, fqms and meshoptimizer.
 - **GGUF conversions**: the converted model files are derivatives of the source models above. Their licence is listed as
   *other / see source model*; each component stays under its original licence.
 - Optional: [Pixal3D](https://github.com/TencentARC/Pixal3D) (TencentARC), which `--model pixal3d` runs.

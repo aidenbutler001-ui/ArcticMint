@@ -1,7 +1,7 @@
 # Live priority queue for arctic-batch: design and status
 
 **Status:** phase 1 built and tested with the fake engine; **opt-in** (`--queue-dir`), default runs are unchanged. It is not the
-default until a PC run on real props passes and the output hashes match the plain run. Phase 2 (yielding a card to another GPU user) is design only.
+default until a PC run on real props passes and the output hashes match the plain run. Phase 2 (`--slot-yield`, yielding a card to another GPU user) is also implemented, opt-in, and has not yet run on real hardware.
 
 ## Why
 The batch list is fixed at start. The 4070 idles at the end of every batch until the next one is started by hand (an estimated ~200 s per
@@ -27,12 +27,16 @@ python arctic_batch.py close  --queue-dir Q
   plain batch and as a live batch (three submitted mid-run, one urgent) give hash-equal GLBs (`cmd_compare`).
 - GPU locks are unchanged (both cards are reserved and locked for the whole live session). The post/finish pipeline is untouched.
 
-## Phase 2 (not built): yielding a card to another GPU user
-Aim: between jobs, lane B (or A) is handed to another program that needs the card instead of being held for the whole session
-(estimated ~200 s per boundary). It needs agreement on how the other program asks (nothing in the lock module supports it
-today), so there is no code yet. Proposal: a `gpu<N>.wanted` file (JSON owner, what, until) in the lock directory, same rules as `.reserved`. When a lane finishes a job and a `.wanted`
-for its card exists, and that card's post/finish work is idle (VramGate shows nothing running), the runner unreserves and releases that
-card, waits until the other lock is gone, then reserves and acquires again and carries on. No preemption, and the other program waits at most one job.
+## Phase 2 (built, `--slot-yield`): yielding a card to another GPU user
+Aim: between jobs, a lane's card is handed to another program that needs it instead of being held for the whole session
+(estimated ~200 s per boundary). Needs `--gen-lanes 2` and `--gpulock`, and the runner must hold the locks itself (not `--gpulock-assume-held`).
+As built (`slot_loop` in `arctic_batch.py`): the other program announces demand with the lock module's `want`, or reserves the card.
+The runner asks the module for `foreign_demand(card, owner)`; when a lane finishes its job on a card with foreign demand, the card is
+paused, released to the other owner, and re-acquired once the demand is gone. No preemption: the other program waits at most one job.
+The lock module must provide `foreign_demand` (the runner exits otherwise).
+
+Original design, superseded: a `gpu<N>.wanted` file (JSON owner, what, until) in the lock directory, same rules as `.reserved`. The code
+uses the lock module's want/foreign_demand calls instead and does not read such a file.
 Open question: lane B's card is also the post/finish card, so yielding it also pauses post/finish; is that acceptable?
 
 ## Hardware test plan (needed before it is a default)

@@ -149,8 +149,9 @@ hold a lock (its pid exits at once), which is why the runner imports the module.
 - **`--phase-lock PATH`**: exported as `ARCTIC_GPU_PHASE_LOCK` to `post-replay` (around GPU QEM) and the finish command
   (around the Cycles bake, `finish.py`), never to generation, so the second card runs one of the two at a time. Unset means no lock.
 - **`--slot-yield`** (needs `--gen-lanes 2` and `--gpulock`): when another lock owner asks for a card, the runner finishes its
-  current job on that card, releases it, and takes it back afterwards. No preemption. Rules are in
-  [`docs/arctic/live-queue.md`](../../docs/arctic/live-queue.md) (Phase 2, design only).
+  current job on that card, releases it, and takes it back afterwards. No preemption. Implemented
+  (needs a lock module with `want` and `foreign_demand`); see
+  [`docs/arctic/live-queue.md`](../../docs/arctic/live-queue.md) (Phase 2).
 
 `finish.py` and the lock module are not in this repository.
 

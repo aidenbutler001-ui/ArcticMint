@@ -29,7 +29,7 @@ last key-tile at the HR token count, ≈53k). BiRefNet bg-removal is done (M2); 
 - ☑ DiT blocks: timestep embed, AdaLN (share_mod) modulation, GELU-tanh MLP
 - ☑ Attention: QKV, QK-RMSNorm, 3D interleaved-pair RoPE (dense + voxel-coord); SDPA via
       **FlashAttention** (`ggml_flash_attn_ext`, BF16 K/V zero-padded to a 256-tile multiple) —
-      O(N) memory and NaN-free at the cascade's HR token count; `TRELLIS_NOFA=1` forces manual softmax
+      O(N) memory and NaN-free at the cascade's HR token count; `--no-fa` forces manual softmax
 - ☑ Cross-attention to image-condition tokens (affine norm2)
 - ☑ FlowEuler guidance-interval sampler (rescale_t warp, CFG interval, guidance_rescale)
 - ☑ SparseTensor (coords[N,4], feats[N,C]) + serialize order
@@ -40,7 +40,7 @@ last key-tile at the HR token count, ≈53k). BiRefNet bg-removal is done (M2); 
 - ☑ DINOv3 ViT-L/16 in GGML + preprocessing → conditioning tokens (rel 1.8e-2 vs timm)
 - ☑ BiRefNet background removal in GGML → alpha matte (Swin-L backbone + ASPPDeformable decoder +
       custom deformable-conv CUDA kernel; full pipeline matches PyTorch — logits rel 8e-3, fully on GPU,
-      ~13s). Selected with `--bg-removal birefnet`; the default is automatic (pre-matted images keep their alpha, otherwise BiRefNet). (Swin window-pad uses a host zero-column since ggml_pad's
+      ~13s). Selected with `--bg-removal birefnet`; the default is automatic (pre-matted images keep their alpha, otherwise BiRefNet if `birefnet.gguf` exists, else a threshold matte). (Swin window-pad uses a host zero-column since ggml_pad's
       CUDA grid dim = N+1 = 65537 exceeds the 65535 limit at res-256/stage-0.)
 - ☑ Text→image entry point via stable-diffusion.cpp (Z-Image), upstream-side tooling; not part of ArcticMint's own use
 
@@ -67,7 +67,7 @@ last key-tile at the HR token count, ≈53k). BiRefNet bg-removal is done (M2); 
 
 ## M6 — Productionize
 - ☑ `trellis-cli` driver (`-i`, `-o`, `-m`, `--gpu`, `--seed`; per-stage model load/free)
-- ☑ Multi-GPU placement (`--gpu N`), f16 default (`TRELLIS_F32` for f32)
+- ☑ Multi-GPU placement (`--gpu N`), f16 default (`--f32` for f32)
 - ☑ Docs + parity test suite (`trellis-test-*` binaries + `tools/ref_*.py`; postprocess
       validated against the reference CUDA `to_glb` run on identical dumped inputs — visual
       parity + `tools/glb_metrics.py` at-or-above-parity texel density, spec 28 addenda)

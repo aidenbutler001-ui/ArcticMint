@@ -43,7 +43,7 @@ first failure and prints which log to read.
 
 ```
 powershell -ExecutionPolicy Bypass -File tools\arctic-post\pc-verify.ps1
-powershell -ExecutionPolicy Bypass -File tools\arctic-post\pc-verify.ps1 -Ref claude/arctic-post-mt -FrontOnly
+powershell -ExecutionPolicy Bypass -File tools\arctic-post\pc-verify.ps1 -Ref my-branch -FrontOnly
 powershell -ExecutionPolicy Bypass -File tools\arctic-post\pc-verify.ps1 -SkipBuild -SkipDump -OutDir out\pv-last
 ```
 
@@ -54,7 +54,7 @@ What it does, in order:
 2. Optional `-Ref` checkout (needs a clean tree), `git submodule update --init --recursive`.
 3. Configure + build like the Windows CUDA job in `.github/workflows/release.yml`
    (`-G Ninja -DCMAKE_BUILD_TYPE=Release -DGGML_CUDA=ON -DCMAKE_CUDA_ARCHITECTURES=86;89 -DGGML_OPENMP=OFF`, override
-   with `-CudaArch`): `trellis-cli`, `post-replay` and the CPU tests; runs the tests; builds `tools/arctic-post` with
+   with `-CudaArch`; the release workflow builds `75;80;86;89;90;120`): `trellis-cli`, `post-replay` and the CPU tests; runs the tests; builds `tools/arctic-post` with
    MSVC and runs `post-equiv-test` (legacy vs multithreaded, byte for byte). The `decimate_qem.cu` `cudaGetDevice` log
    (a separate commit) gets its first compile check here.
 4. Refuses to start if anything else is using GPU 1 (default; `nvidia-smi` order = `CUDA_DEVICE_ORDER=PCI_BUS_ID`):

@@ -8,10 +8,15 @@ Where a licence has not been checked against its actual text in this repository,
 |-----------|--------|---------|-------|
 | ArcticMint / [trellis.cpp](https://github.com/pwilkin/trellis.cpp) | Piotr Wilkin (Copyright (c) 2026) | MIT | Full text in [`LICENSE`](LICENSE). The engine, model ports and most of the CLI come from this work. |
 | [TRELLIS.2](https://github.com/microsoft/TRELLIS.2) and [`TRELLIS.2-4B`](https://huggingface.co/microsoft/TRELLIS.2-4B) weights | Microsoft | MIT (as stated in the README) | Verify against the upstream repository and model card before redistributing weights. |
-| [ggml](https://github.com/ggml-org/ggml) | ggml authors | MIT | Vendored under `thirdparty/ggml`. Verify against `thirdparty/ggml/LICENSE`. |
+| [ggml](https://github.com/ggml-org/ggml) | ggml authors | MIT 
 | [DINOv3](https://github.com/facebookresearch/dinov3) ViT-L/16 | Meta | DINOv3 licence agreement (not MIT) | See below. |
 | [BiRefNet](https://huggingface.co/ZhengPeng7/BiRefNet) | ZhengPeng7 and co-authors | Verify | Used for background removal. Licence not checked here. |
-| stb, xatlas | their authors | Verify | Vendored. Check the licence files shipped with each. |
+| [xatlas](https://github.com/jpcy/xatlas) | Jonathan Young | MIT | Vendored in `thirdparty/xatlas`. |
+| [stb](https://github.com/nothings/stb) (`stb_image`, `stb_image_write`, `stb_image_resize`) | Sean Barrett and contributors | Public domain | Vendored in `thirdparty/stb`. |
+| [cpp-httplib](https://github.com/yhirose/cpp-httplib) | Yuji Hirose | MIT | Vendored in `thirdparty/cpp-httplib`; used by `trellis-server`. |
+| fqms (Fast-Quadric-Mesh-Simplification) | Spacerat and contributors | MIT | Vendored in `thirdparty/fqms`. |
+| [meshoptimizer](https://github.com/zeux/meshoptimizer) | Arseny Kapoulkine | MIT | Vendored in `thirdparty/meshoptimizer`. |
+| [`<model-viewer>`](https://github.com/google/model-viewer) (bundles three.js) | Google and contributors | BSD-3-Clause (header of the bundle), three.js is MIT | Vendored as a minified bundle in `app/public/vendor/` and `tools/mv_preview/`. |
 | [Pixal3D](https://github.com/TencentARC/Pixal3D) | TencentARC | Verify | Optional; run by `--model pixal3d`. |
 | GGUF conversions of the above | derivatives of the source models | *other / see source model* | Each component stays under its original licence. |
 
@@ -30,5 +35,4 @@ every component as bound by its original licence, including the DINOv3 agreement
 ## Upstream code
 
 Files inherited from trellis.cpp keep their original headers. ArcticMint additions (`src/post_parallel.*`, `src/post_mesh.cpp`,
-`tools/arctic-post/`, `tools/arctic-batch/`) are released under the same MIT licence as the rest of the repository (verify
-that this matches the maintainer's intent).
+`tools/arctic-post/`, `tools/arctic-batch/`) are released under the same MIT licence as the rest of the repository.

@@ -1,400 +1,166 @@
-> **ArcticMint (Arctic)** is a private, standalone copy of
-> [pwilkin/trellis.cpp](https://github.com/pwilkin/trellis.cpp) by **Piotr Wilkin**, used under the MIT licence
-> (see `LICENSE`, copyright notice retained). It carries the Expiramental3d project's changes, starting with
-> multithreaded CPU post-processing (`tools/arctic-post/`, `src/post_parallel.*`) that gives byte-identical output.
-> Everything below is upstream's README, unchanged. Upstream fixes are merged in by hand from the `upstream` remote.
+<h1 align="center">ArcticMint</h1>
 
-# trellis.cpp
-
-A standalone, **GGML-based C++** implementation of Microsoft's
-[TRELLIS.2-4B](https://huggingface.co/microsoft/TRELLIS.2-4B) image-to-3D pipeline:
-background removal, image conditioning, the three flow transformers, the VAE decoders,
-mesh extraction and UV-textured GLB export — all in native C++/GGML with no Python at
-runtime. Optionally driven end-to-end from a text prompt with
-[stable-diffusion.cpp](https://github.com/leejet/stable-diffusion.cpp) producing the
-input image.
-
-It ports the reference implementation at
-[microsoft/TRELLIS.2](https://github.com/microsoft/TRELLIS.2).
-
-```
-./build/trellis-cli assets/goblin.png out/goblin.glb      # image -> UV-textured GLB (atlas + PBR)
-python tools/render_glb.py out/goblin.glb out/view.png    # quick multi-view render
-```
-
-Prebuilt binaries for Linux and Windows (Vulkan, ROCm, CUDA) are published on the
-[releases page](../../releases). Serves as the `trellis` backend of
-[Lemonade](https://github.com/lemonade-sdk/lemonade).
-
-## Quick start
-
-New here? **Trellis Studio** is a one-command install that auto-detects your GPU
-runtime (CUDA / ROCm / Vulkan), downloads the server + weights, and gives you a
-drag-an-image → 3D desktop app with an interactive preview and a saved gallery.
-
-```bash
-# Linux (x86-64)
-curl -fsSL https://raw.githubusercontent.com/pwilkin/trellis.cpp/main/install/install.sh | bash
-```
-```powershell
-# Windows (x64), in PowerShell
-irm https://raw.githubusercontent.com/pwilkin/trellis.cpp/main/install/install.ps1 | iex
-```
-
-See [**Trellis Studio (desktop app)**](#trellis-studio-desktop-app) below for what it
-does and how to use it, or [`docs/getting-started.md`](docs/getting-started.md) for the
-full walkthrough and installer options.
-
-## Showcase
-
-Seven image→3D reconstructions produced end-to-end by trellis.cpp **v0.4.3** on a
-single Radeon 8060S (all res-1024 cascade, seed 42, ~300K faces, 2048² atlas; the
-GLBs and their Z-Image-Turbo source images live in
-[`assets/showcase/`](assets/showcase/)):
-
-<p>
-<a href="assets/showcase/axe/axe_quad4k.png"><img src="assets/showcase/axe/axe_quad4k.png" width="49%"></a>
-<a href="assets/showcase/chest/chest_quad4k.png"><img src="assets/showcase/chest/chest_quad4k.png" width="49%"></a>
-<a href="assets/showcase/cottage/cottage_quad4k.png"><img src="assets/showcase/cottage/cottage_quad4k.png" width="49%"></a>
-<a href="assets/showcase/drone/drone_quad4k.png"><img src="assets/showcase/drone/drone_quad4k.png" width="49%"></a>
-<a href="assets/showcase/golem/golem_quad4k.png"><img src="assets/showcase/golem/golem_quad4k.png" width="49%"></a>
-<a href="assets/showcase/knight/knight_quad4k.png"><img src="assets/showcase/knight/knight_quad4k.png" width="49%"></a>
-<a href="assets/showcase/racer/racer_quad4k.png"><img src="assets/showcase/racer/racer_quad4k.png" width="49%"></a>
-</p>
-
-Each grid is a 4096×4096 four-view capture — front / right / back / left at 75°
-elevation, 2048² per view — made with
-[`tools/mv_preview/render_quad.js`](tools/mv_preview/render_quad.js), a headless
-Playwright driver around Google's `<model-viewer>`: it serves
-`tools/mv_preview/quad.html`, loads the GLB into a 2×2 grid of viewers, waits for
-auto-framing to settle, captures each view via `toBlob`, and
-[`stitch_quad.py`](tools/mv_preview/stitch_quad.py) assembles the final grid.
-
-## Trellis Studio (desktop app)
-
-**Trellis Studio** is the standalone desktop app (built with [Tauri](https://tauri.app))
-for anyone who wants image→3D without touching the command line. The one-command
-installer above auto-detects your GPU runtime, downloads the matching
-`trellis-server` build plus the ~16.5 GB of weights, and installs the app; on launch
-it starts and supervises the server for you, so the whole flow is drag-image →
-click → rotate the result.
+<p align="center"><b>Image in, textured 3D model out, all in native C++.</b><br>
+MIT licensed &middot; C++17 &middot; ggml &middot; CUDA, Vulkan, ROCm, Metal</p>
 
 <p align="center">
-<img src="assets/trellis-studio.png" width="92%" alt="Trellis Studio — drop an image, generate a textured 3D model, preview it interactively">
+<a href="#quick-start">Quick start</a> &middot;
+<a href="#what-arcticmint-adds">What it adds</a> &middot;
+<a href="docs/README.md">Docs</a> &middot;
+<a href="ROADMAP.md">Roadmap</a> &middot;
+<a href="NOTICE.md">Credits</a>
 </p>
 
-**Using it:**
+ArcticMint is a C++/[ggml](https://github.com/ggml-org/ggml) port of
+Microsoft's [TRELLIS.2-4B](https://huggingface.co/microsoft/TRELLIS.2-4B) image-to-3D model. Give it a picture, get back a
+UV-textured, PBR GLB. There is no Python and no PyTorch at runtime.
 
-1. **Add an image** — drag-and-drop onto the drop zone, click to browse, or paste
-   from the clipboard.
-2. **Set options** (optional) — resolution (512 light / 1024 cascade / 1536 high),
-   seed, background removal (auto / birefnet / threshold), and UV unwrap
-   (xatlas / box). Defaults match the CLI.
-3. **Generate 3D** — this takes a few minutes; a live stage line shows progress.
-4. **Inspect** — rotate and zoom in the interactive preview (Google's three.js-based
-   `<model-viewer>`); **Reset view** re-frames the camera and **Save GLB…** exports
-   the model.
-5. **Reuse** — every result is kept in a local **gallery** (IndexedDB): click a
-   thumbnail to reload its model, input image, and settings — even after restarting
-   the app.
+We run it on a Windows PC with an RTX 4070 SUPER and an RTX 3060 Ti, so most of the engineering here is about keeping both
+cards busy: a multithreaded CPU post-processing stage, a parallel batch runner, and an opt-in draft-then-refine seed picker.
 
-The **Settings** panel (gear icon) points the app at a different models directory,
-GPU index, or port; the models directory, backend, and server binary come from the
-`config.json` the installer writes. Because the UI is a plain web bundle you can also
-skip the app entirely and open it in a browser against a `trellis-server` you started
-yourself — see [`docs/getting-started.md`](docs/getting-started.md) for that, the full
-installer options, and troubleshooting. The app source lives in [`app/`](app/).
+> **Lineage.** ArcticMint is a derivative of [pwilkin/trellis.cpp](https://github.com/pwilkin/trellis.cpp) by
+> **Piotr Wilkin**, used under the MIT licence (the notice is kept in [`LICENSE`](LICENSE)). The engine, the model ports and
+> most of the CLI come from that work. ArcticMint adds the pieces listed under [What ArcticMint adds](#what-arcticmint-adds).
+> It is a standalone copy; upstream fixes are merged in by hand.
 
-The sections below document the **CLI and HTTP server** directly, for advanced and
-scripted use.
+## Why a native port
 
-## Usage
-
-The default is the **1024 cascade** (LR `flow_512` → upsample → HR `flow_1024` →
-res-1024 decode, sharper geometry); `--res 512` selects the lighter res-512 path.
-All behavior is driven by CLI flags — run `trellis-cli --help` for the full list.
-
-For an optional all-quad textured export on Linux or Windows, build with both
-retopology options enabled. CMake downloads pinned LEMON, CGAL, and Boost sources.
-Linux additionally builds GMP and MPFR; Windows uses CGAL's Boost Multiprecision
-backend. No separate dependency paths or installs are needed. Building
-`trellis-cli` also builds the retopology driver and its helper executables. The
-prebuilt release binaries omit this optional path.
-
-```bash
-# Linux
-cmake -S . -B build -DGGML_VULKAN=ON \
-  -DTRELLIS_RETOPO_MATCHING=ON -DTRELLIS_RETOPO_COLLISION=ON
-cmake --build build --target trellis-cli -j
-mkdir -p out/retopo-work
-TMPDIR="$PWD/out/retopo-work" ./build/trellis-cli assets/goblin.png out/goblin-quads.glb \
-  --models /path/to/gguf --seed 42 --res 1024 --tex-res 512 \
-  --retopo 512 0 900000 --retopo-no-weld-fill --retopo-dual-pbr \
-  --retopo-atlas 4096 --retopo-workdir out/retopo-work
-```
-
-```powershell
-# Windows x64, in an MSVC developer PowerShell with Ninja and the Vulkan SDK
-cmake -S . -B build-retopo -G Ninja -DGGML_VULKAN=ON -DGGML_OPENMP=OFF `
-  -DTRELLIS_RETOPO_MATCHING=ON -DTRELLIS_RETOPO_COLLISION=ON
-cmake --build build-retopo --target trellis-cli --parallel
-New-Item -ItemType Directory -Force out/retopo-work | Out-Null
-.\build-retopo\trellis-cli.exe assets/goblin.png out/goblin-quads.glb `
-  --models C:\path\to\gguf --seed 42 --res 1024 --tex-res 512 `
-  --retopo 512 0 900000 --retopo-no-weld-fill --retopo-dual-pbr `
-  --retopo-atlas 4096 --retopo-workdir out/retopo-work
-```
-
-The three `--retopo` numbers select the tetra remesh grid, initial QEM face
-target (zero preserves the full shell), and final QEM face target. On Linux, this
-configuration passed a full Vulkan goblin run; a thin-feature humanoid passed
-with the same 512-grid, no-weld preparation. `--retopo-dual-pbr` requires
-`--res 1024 --tex-res 512`: it decodes a 1024-resolution PBR field for the
-quad atlas when the 512 field leaves texture holes, at extra compute and
-storage cost. The raw POST, intermediate meshes, logs, and acceptance report
-stay in a unique run directory under `--retopo-workdir`. Choose a disk-backed
-location with ample free space for it and `TMPDIR`, particularly if your system
-uses a RAM-backed temporary directory. The requested GLB is published only
-after the geometry, topology, source-cover, exact-UV, and bake gates pass.
-The standalone `trellis-retopo-atlas --from-post` command can resume from an existing POST
-without repeating image generation.
-
-Other useful CLI flags:
-
-| flag | effect |
-|------|--------|
-| `--res 512\|1024\|1536` | geometry resolution (512 = light path, no cascade) |
-| `--bg-removal threshold\|birefnet` | default **auto**: pre-matted images keep their alpha, otherwise the BiRefNet matte (~13s on GPU). The plain white-bg keyer cuts specular highlights out of the alpha — the flow then generates holes there — so it is opt-in only |
-| `--no-texture` | geometry only |
-| `--faces N` | QEM decimation face target, ≥ 1000 (default 300K @1024/1536, 150K @512). Lower gives lighter game/web assets and a faster UV unwrap; the baked texture keeps the surface detail |
-| `--decim GRID` | legacy cluster-grid decimation instead of QEM (`0` = keep the full-res mesh); not combinable with `--faces` |
-| `--atlas PX` | UV atlas size (default 2048 @1024 / 1024 @512) |
-| `--box-uv` | voxel-native 6-way box projection instead of the default xatlas unwrap (O(faces), faster, looser packing) |
-| `--seed N` | RNG seed |
-| `--model trellis\|pixal3d` | which family of flow weights `--models` holds (see [Pixal3D backend](docs/pixal3d/README.md)) |
-| `--steps N` | flow sampler steps (default 12; lower values are useful for backend bring-up) |
-| `--backend NAME` | select a registered ggml backend explicitly, such as `HTP`, `Vulkan`, or `CPU` |
-| `--threads N` | CPU threads (defaults to the detected hardware thread count) |
-| `--sched on\|off` | enable multi-backend scheduling; automatic for the partial-coverage HTP backend |
-| `--vulkan-fallback` | with HTP, try Vulkan before the CPU for unsupported operations |
-| `--fa-fast` / `--fa-f32` | select fast F16 or BF16/F32 FlashAttention accumulation |
-| `--verbose` | graph timings and progress heartbeats for long-running stages |
-| `--require-gpu` | fail instead of falling back to the (very slow, RAM-hungry) CPU path |
-
-### Pixal3D
-
-Available starting with v0.8.0. `--model pixal3d` runs
-[TencentARC/Pixal3D](https://github.com/TencentARC/Pixal3D) on the same engine. Pixal3D is a TRELLIS.2 fine-tune that replaces cross-attention over the DINOv3
-patch tokens with **pixel-aligned projection conditioning**: each DiT token is a grid cell,
-projected into the image and sampled there. The samplers, decoders, remesh and bake are
-shared, so the integration is a conditioning module plus one branch inside the DiT block.
-The shape/texture stages also run the NAF guided feature upsampler, ported in
-`src/naf.cpp`.
-
-Both families use the **same model directory**: the Pixal3D flows and NAF are named
-`pixal3d_*.gguf`, while the decoders, DINOv3 and BiRefNet are byte-identical and shared,
-so adding Pixal3D to a working TRELLIS.2 set is 5 new files — pre-built at
-[`vegax87/Pixal3D`](https://huggingface.co/vegax87/Pixal3D). See
-**[docs/pixal3d/README.md](docs/pixal3d/README.md)** for the model list, the `--fov`
-camera flag (MoGe-2 estimation is not ported) and the known gaps.
-
-The postprocess matches the reference pipeline op for op (see
-`docs/spec/27-reference-postprocess.md` / `28-divergence-matrix.md`): the raw
-dual-grid mesh is welded and hole-filled, **remeshed with narrow-band UDF dual
-contouring** into a single clean manifold, quadric-simplified to the face budget,
-coarse-clustered with the reference's bottom-up normal-cone merge, unwrapped with
-stock xatlas per cluster and packed at auto resolution (UVs normalized to fill the
-full atlas), shaded per texel by trilinear sampling of the voxel PBR volume (with
-BVH closest-point snap onto the original surface), gutter-filled with a Telea
-inpaint port, and exported as a GLB with smooth normals and **lossy-WebP textures**
-(`EXT_texture_webp`; PNG fallback when built with `-DTRELLIS_WEBP=OFF`). Output
-quality is at parity with the reference CUDA postprocess on identical inputs.
-
-Prefer the CLI flags above. The corresponding `TRELLIS_*` environment variables remain
-available for test binaries and backwards-compatible automation.
-
-### trellis-server
-
-`trellis-server` keeps the process resident (no Vulkan re-init per request) and exposes:
-
-```
-GET  /health     -> "ok"
-POST /generate      multipart/form-data with an "image" file part; optional text
-                    fields "seed", "resolution" (512/1024/1536), "bg_removal"
-                    (threshold|birefnet), "faces" (QEM face target, >= 1000 or
-                    "auto"; 400 on an invalid value). Returns model/gltf-binary.
-```
-
-Launch-time flags (including `--res`) set the per-request defaults; each request can
-override them with its own fields.
+- **One binary, no Python stack.** The reference pipeline needs CUDA-only extensions (flash-attn, spconv, nvdiffrast,
+  o-voxel). The ggml build runs on CUDA, Vulkan, ROCm and Metal from the same code.
+- **Fits a consumer card.** FlashAttention with padded K/V keeps the 1024 cascade within 16 GB, and per-stage model
+  load/free keeps resident memory down (see `src/dit.cpp::sdpa` and [`ROADMAP.md`](ROADMAP.md)).
+- **Checked against the reference.** Each neural component has a `trellis-test-*` parity binary and a `tools/ref_*.py`
+  PyTorch dump. Relative errors recorded in the repo: sparse-structure sampler 4.3e-3 (exact voxel match), DiT 2.8e-3,
+  DINOv3 1.8e-2, sparse conv 1e-3, BiRefNet 4e-4, C2S exact.
 
 ## Pipeline
 
-```
-text prompt
-  │  stable-diffusion.cpp (Z-Image)              [external binary]
-  ▼
-RGB image
-  │  BiRefNet / RMBG  (background removal)        [GGML]   → RGBA cutout
-  ▼
-DINOv3 ViT-L/16 feature extractor                [GGML]   → patch tokens [N,1024]
-  │  (image conditioning, + null cond for CFG)
-  ▼
-① Sparse-Structure flow DiT (1.3B, dense 16³)    [GGML]
-  │  → 8-ch 16³ latent → SS conv3d decoder → 64³ occupancy → active voxels
-  ▼
-② Shape-SLAT flow DiT (1.3B, sparse)             [GGML]   → 32-ch latent / active voxel
-  │  → FlexiDualGrid shape decoder (sparse ConvNeXt) → dual grid → FlexiCubes mesh
-  ▼
-③ Texture-SLAT flow DiT (1.3B, sparse)           [GGML]   → 32-ch latent / active voxel
-  │  → Sparse U-Net tex decoder (6-ch PBR per voxel)
-  ▼
-textured mesh
-  │  weld → fill → narrow-band DC remesh → QEM edge-collapse decimate → cluster + xatlas →
-  │  trilinear PBR bake (BVH snap) → Telea inpaint    [decimate: CPU / CUDA / HIP / Vulkan]
-  ▼
-UV-textured GLB (WebP PBR textures)
+```mermaid
+flowchart TD
+    A[RGB image] --> B[BiRefNet background removal]
+    B --> C[DINOv3 ViT-L/16 conditioning tokens]
+    C --> D["1. Sparse-structure flow DiT<br/>(dense 16^3) -> 64^3 occupancy"]
+    D --> E["2. Shape SLAT flow DiT<br/>-> shape decoder -> dual-grid mesh"]
+    E --> F["3. Texture SLAT flow DiT<br/>-> 6-channel PBR per voxel"]
+    F --> G["CPU post: weld, hole fill, dual-contouring remesh,<br/>QEM decimation, xatlas UVs, PBR bake"]
+    G --> H[UV-textured GLB]
 ```
 
-The decimation is a faithful port of the reference's CuMesh QEM edge-collapse simplifier
-(Garland-Heckbert quadrics + a skinny-triangle shape metric + flip rejection + boundary
-weighting), replacing an off-the-shelf simplifier that produced a fragmented, non-adaptive
-mesh. The result matches the reference's adaptive triangulation — a single watertight
-component with reference-level surface smoothness. It runs on the GPU (CUDA, ROCm/HIP, or a
-Vulkan compute shader) behind one dispatch, with an automatic CPU fallback.
+The three flow stages use a rectified-flow Euler sampler (12 steps by default) with classifier-free guidance. The
+default is the **1024 cascade**: a low-resolution `flow_512` pass, an upsample, then a high-resolution `flow_1024` pass.
+`--res 512` selects the lighter path. Per-component architecture notes live in [`docs/spec/`](docs/spec/).
 
-All three flow stages use a `FlowEulerGuidanceIntervalSampler` (rectified-flow Euler,
-12 steps, classifier-free guidance with a guidance interval + rescale). Optional
-512→1024 cascade for higher resolution.
+## Quick start
 
-The 1024 cascade runs on a 16 GB card thanks to **FlashAttention with padded K/V**
-(`src/dit.cpp::sdpa`): the manual softmax needed a single ~18 GB score-matrix alloc at
-the sparse-structure stage, and at the HR token count (≈53k) ggml's tiled FA NaN'd on
-the unpadded last key-tile — zero-padding K/V to a 256 multiple + BF16 fixes both.
-f16 compute is the default and matches torch (`--f32` forces f32; `--no-fa` restores
-the plain-softmax path for A/B testing). On the Qualcomm HTP backend, FlashAttention
-defaults to F16 K/V and fast accumulation after a 12-step quality gate showed a 3.53x
-end-to-end speedup with identical sparse voxels; `--fa-f32` restores BF16 K/V + F32
-accumulation. Other backends retain BF16/F32 by default (`--fa-fast` forces the HTP mode).
+Requires CMake, a C++17 compiler, Ninja, and a GPU toolchain for the backend you pick (CUDA, Vulkan SDK or ROCm).
+ggml is a git submodule at `thirdparty/ggml`, pointing at a fork.
 
-Every neural component is validated against PyTorch (the `trellis-test-*` binaries +
-`tools/ref_*.py`): SS sampler matches torch to rel 4.3e-3 (exact voxel match), DiT
-2.8e-3, DINOv3 1.8e-2, sparse conv 1e-3, BiRefNet 4e-4, C2S exact.
-
-## Models
-
-**Pre-built GGUFs:** [`ilintar/trellis2-gguf`](https://huggingface.co/ilintar/trellis2-gguf) —
-download the full set and point `trellis-cli` / `trellis-server` (`--models DIR`) at that
-folder. Or convert your own from the source checkpoints below (see `docs/spec/` and
-`tools/` for the safetensors→GGUF conversion).
-
-| role | source | notes |
-|------|--------|-------|
-| SS flow DiT | `microsoft/TRELLIS.2-4B` `ss_flow_img_dit_1_3B_64` | 1.3B, bf16 |
-| Shape SLAT flow | `…/slat_flow_img2shape_dit_1_3B_{512,1024}` | 1.3B, bf16; `_1024` drives the cascade's HR pass |
-| Tex SLAT flow | `…/slat_flow_imgshape2tex_dit_1_3B_{512,1024}` | 1.3B, bf16; `_1024` drives the cascade's HR pass |
-| Shape decoder | `…/shape_dec_next_dc_f16c32` | FlexiDualGrid VAE |
-| Tex decoder | `…/tex_dec_next_dc_f16c32` | Sparse U-Net VAE, 6-ch |
-| SS decoder | `microsoft/TRELLIS-image-large` `ss_dec_conv3d_16l8` | reused from v1 |
-| Image cond | `timm/vit_large_patch16_dinov3.lvd1689m` | ungated mirror of DINOv3 ViT-L (same weights) |
-| BG removal | `ZhengPeng7/BiRefNet` | ungated BiRefNet (RMBG-2.0 substitute) |
-
-The two helper models are HF-gated upstream; the ungated equivalents above avoid needing
-a token.
-
-## Performance
-
-Measured end-to-end (image → GLB, res 1024, 12-step flows, includes model load;
-`docs/spec/29-perf-profile.md` has the per-flow breakdown and methodology):
-
-| input class | Strix Halo iGPU (Vulkan) | RTX 5060 Ti (CUDA) | reference Python, same GPU (cold) |
-|---|---|---|---|
-| light (goblin, 17k HR tokens) | 6:09 | **3:16** | 3:37 |
-| heavy (turret, ~45k HR tokens) | 12:39 | **7:23** | 5:20 |
-
-The postprocess (weld → remesh → decimate → unwrap → bake → WebP) uses the faithful
-CuMesh QEM decimation described above. With a GPU backend it decimates a 5.4M→300k-face
-mesh in ~5 s on ROCm (gfx1151) — ~18× the single-threaded CPU path — matching the
-reference's on-GPU decimation; the CPU fallback stays available for GPU-less builds.
-On Strix Halo, Vulkan is the fastest backend: ROCm requires
-`GGML_CUDA_DISABLE_GRAPHS=1` (ggml's HIP graph capture stalls on these graphs)
-and still trails Vulkan by 10–40 %.
-
-**Apple Silicon (Metal):** verified end-to-end on an Apple M5 (24 GB unified):
-res-512 image → textured GLB in **9:21** with a **5.6 GB** peak RSS, all
-neural stages on Metal (2.4M decoded voxels, 4.8M-face raw mesh). bfloat16 and
-f16 tensor APIs are available from M2 on; on M1 use `TRELLIS_FA_FAST=1`
-(f16 K/V) since the default FlashAttention path casts K/V to bf16.
-
-## Tools
-
-| tool | purpose |
-|------|---------|
-| `post-replay <dump.bin> <out.glb>` | re-run the whole postprocess from a `TRELLIS_DUMP_POST` dump in seconds (flags: `--no-remesh`, `--band`, `--no-snap`, `--box-uv`, `--faces`, `--atlas`, …) |
-| `trellis-retopo-atlas --from-post SOURCE.post OUTPUT.glb GRID FIRST_FACES FINAL_FACES [ATLAS] [--no-weld-fill]` | optional native POST-to-textured-quad pipeline with geometry, topology, UV, and bake acceptance gates |
-| `tools/glb_metrics.py` | CPU geometry/UV/material metrics (components, boundary edges, winding, texel density, doubleSided/WebP flags) for ours-vs-reference GLB comparison |
-| `tools/render_glb.py` / `render_glb_fast.py` | quick multi-view flat renders |
-| `tools/mv_preview/` | PBR-correct GLB previews via the `<model-viewer>` web component (see its README) |
-
-## Building
-
-GGML is vendored in `thirdparty/ggml`. Pick a backend:
-
-```
-cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DGGML_VULKAN=ON   # Vulkan
-cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DGGML_CUDA=ON    # CUDA
-cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DGGML_HIP=ON     # ROCm
-cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release                   # macOS: Metal (auto)
+```bash
+git submodule update --init --recursive
+cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DGGML_CUDA=ON      # or -DGGML_VULKAN=ON / -DGGML_HIP=ON
 cmake --build build -j
 ```
 
-On **macOS/Apple Silicon** no backend flag is needed — ggml's Metal backend
-defaults ON for Apple builds and the generic device selection picks the GPU.
-The two custom kernels (BiRefNet deformable conv, QEM decimation) run their
-CPU fallbacks there.
+macOS builds use Metal automatically. On Windows with CUDA, the configuration used for the PC verification script is
+`-G Ninja -DCMAKE_BUILD_TYPE=Release -DGGML_CUDA=ON -DCMAKE_CUDA_ARCHITECTURES="86;89" -DGGML_OPENMP=OFF`.
+See `.github/workflows/release.yml` for the flags the upstream-style release builds use.
 
-See `.github/workflows/release.yml` for the exact flags the release binaries use
-(GPU target lists, `-DGGML_OPENMP=OFF` on Windows). Releases also include a
-`cuda12` variant built with CUDA 12.9 for Pascal/Volta GPUs (compute capability
-6.0/6.1/7.0); the standalone installers select it automatically for devices such
-as the Tesla P100.
+**Models.** Download the GGUF set from [`ilintar/trellis2-gguf`](https://huggingface.co/ilintar/trellis2-gguf), or convert
+the source checkpoints yourself with [`tools/convert.py`](tools/convert.py) (details in `docs/spec/`). Point
+`--models` at that folder.
 
-### Windows ARM64 and Qualcomm HTP
+**Generate a model:**
 
-The native ARM64 helper configures clang for Windows-on-ARM and can build CPU, Vulkan,
-or Hexagon variants. For HTP, install the Hexagon SDK using the official
-[llama.cpp Windows Snapdragon guide](https://github.com/ggml-org/llama.cpp/blob/master/docs/backend/snapdragon/windows.md).
-The trimmed `hexagon-sdk-v6.6.0.0-arm64-wos.tar.xz` package described there is sufficient;
-extract it anywhere and pass the directory containing `hexagon_sdk.json` to
-`-HexagonSdk`:
-
-```powershell
-scripts\build-arm64.ps1 -Backend cpu
-scripts\build-arm64.ps1 -Backend vulkan
-scripts\build-arm64.ps1 -Backend hexagon -HexagonSdk C:\Qualcomm\Hexagon_SDK\6.6.0.0
+```bash
+./build/trellis-cli -i assets/goblin.png -o out/goblin.glb -m /path/to/gguf --seed 42
 ```
 
-Windows requires the generated HTP Ops libraries and catalog to be signed with a trusted
-certificate before the NPU driver will load them. The linked guide documents the required
-driver, certificate, test-signing, and `HEXAGON_HTP_CERT` setup.
+`trellis-cli --help` prints every option. A few that matter:
 
-List registered devices with `trellis-devices --init`. A typical NPU run uses:
+| flag | effect |
+|------|--------|
+| `--res 512\|1024\|1536` | geometry resolution (default is the 1024 cascade) |
+| `--seed N` | RNG seed (default: random, logged as `seed N (auto)`; pass a value to reproduce a run) |
+| `--faces N` | QEM decimation target, at least 1000 (default 300K at 1024, 150K at 512) |
+| `--atlas PX` | UV atlas size (default 2048 at 1024) |
+| `--bg-removal threshold\|birefnet` | default is automatic: pre-matted images keep their alpha, otherwise BiRefNet if `birefnet.gguf` is in the models folder, else a threshold matte |
+| `--tex-reroll N` | opt-in colour check, integer 0..16 (default 0 = off; other values are rejected). Redoes only the texture stage up to N times when the decoded brightness is far off the picture's, and keeps the closest draw. Skipped when there is no foreground cutout. `TRELLIS_TEX_REROLL=N` is the fallback when the flag is absent (non-numeric ignored, out-of-range clamped to 0..16); an explicit `--tex-reroll 0` beats it |
+| `--box-uv` | faster box-projection UVs instead of the default xatlas unwrap |
+| `--no-texture` | geometry only |
+| `--gpu N` / `--backend NAME` | pick the device or force a ggml backend; `trellis-devices` lists what the build sees |
+| `--steps N` / `--steps-ss N` | flow sampler steps overall, and for the sparse-structure flow only |
+| `--ss-only` / `--ss-seeds N` | stop after the structure stage and write the voxel bounding box for N seeds, with no mesh |
+| `--dump-post PATH` | write the welded, filled, remeshed and cleaned mesh and the voxel PBR volume, then exit, for external post-processing |
+| `--require-gpu` | fail instead of falling back to the very slow CPU path |
+| `-v` | per-stage timings |
 
-```powershell
-build-arm64-hexagon\trellis-cli.exe input.png output.glb `
-  --models models\q4 --backend HTP --sched on --verbose
+`post-replay DUMP OUT.glb` re-runs the whole post-processing stage from a dump (about 65 s on 24 threads, per the batch README), which is how post-processing
+changes are tested. `trellis-server` keeps the engine resident behind a small HTTP API (`POST /generate`, `GET /health`).
+`--model pixal3d` runs the [Pixal3D](docs/pixal3d/README.md) fine-tune on the same engine.
+
+## What ArcticMint adds
+
+- **Multithreaded CPU post-processing** (`src/post_parallel.*`, `src/post_mesh.cpp`). Weld, clean, small-component removal,
+  BVH build and parts of the remesh run on all cores and produce **byte-identical output** to the old single-thread code at
+  any thread count (randomised equivalence test in `tools/arctic-post/post_equiv_test.cpp`, golden hashes in
+  `docs/arctic/post-mt-golden.txt`). `TRELLIS_POST_THREADS` sets the thread count; `TRELLIS_POST_LEGACY=1` selects the old
+  path. Design notes: [`docs/arctic/post-mt.md`](docs/arctic/post-mt.md).
+- **A standalone post-processing build** (`tools/arctic-post/`) that needs no GPU and no ggml, plus a synthetic dump
+  generator and a Windows verification script. See its [README](tools/arctic-post/README.md).
+- **Parallel batch runner** ([`tools/arctic-batch/`](tools/arctic-batch/README.md), Python standard library only). One asset is
+  roughly 150 s of GPU generation followed by about 65 s of CPU post on 24 threads, so each side idles while the other works.
+  The runner generates on one card while finished dumps are post-processed in a pool, with a bounded queue, per-stage
+  timestamps in `batch.csv`, a `batch_report.md` summary and a `compare` command that checks overlap output is hash-equal to a
+  serial run. Optional extras, off by default: a second generation lane on the other GPU (`--gen-lanes 2`), a live priority
+  queue (`--queue-dir`, with `submit` and `close`), longest-first ordering (`--order longest-first`), and a cooperative GPU lock
+  (`--gpulock`, `--phase-lock`, `--slot-yield`). The VRAM preflight check is on by default; `--no-preflight` skips it.
+- **Draft-then-refine seed picking** (opt-in, [`tools/arctic-batch/draft_refine.py`](tools/arctic-batch/draft_refine.py)). For each
+  prop it queues cheap res-512 drafts of several candidate images or seeds, scores the drafts with a judge command you supply
+  (`size_judge.py` is an example that checks the model's proportions against an expected W,D,H), and only fully generates the
+  top K. Refined outputs are the batch's normal production command, so they are hash-equal to a plain run of the same image and
+  seed. A draft screens shape and size, not appearance; choosing among the refined models stays with you.
+
+```bash
+python tools/arctic-batch/arctic_batch.py run images/ -o out/batch --cli build/trellis-cli --replay build/post-replay -m /path/to/gguf
+python tools/arctic-batch/arctic_batch.py compare out/serial out/batch     # PASS/FAIL per asset
 ```
 
-Add `--vulkan-fallback` when the same build includes Vulkan and unsupported HTP operations
-should prefer the GPU over the CPU.
+## Status and limitations
 
-## Layout
+- **Verified on the author's setup.** Day-to-day use is Windows with CUDA on an RTX 4070 SUPER and an RTX 3060 Ti. Other
+  backends build from the same source but are exercised through upstream's work, not here.
+- **Throughput figures above are rough, from one machine.** They come from the batch notes, not a controlled benchmark.
+  Upstream's own measurements across other GPUs are in [`docs/spec/29-perf-profile.md`](docs/spec/29-perf-profile.md).
+- **Not everything has run on real hardware.** `tools/arctic-post/pc-verify.ps1` is documented as written without a
+  Windows/NVIDIA machine to test on. The live queue and the second generation lane are opt-in and are documented as needing a
+  PC run before becoming defaults.
+- **GPU decimation is not deterministic run to run**, so GLBs from the GPU and CPU QEM paths can differ. The CPU
+  post-processing change itself is byte-identical.
+- **CPU-only generation is impractically slow and memory hungry**; use `--require-gpu` to avoid landing there by accident.
+- Pixal3D support has known gaps (for example, no MoGe-2 field-of-view estimation); see its docs.
+- The `trellis-server` HTTP API and the desktop app in `app/` are inherited from upstream and are not part of ArcticMint's
+  own testing.
 
-```
-src/            C++ implementation (models, ops, pipeline, drivers)
-src/test_*.cpp  parity / unit tests vs reference tensors (built as the trellis-test-* binaries)
-include/        public headers
-tools/          python conversion scripts (safetensors → GGUF) + reference-dump checks, via the uv venv
-docs/spec/      reverse-engineered per-component architecture spec
-thirdparty/     vendored ggml (gitignored), plus stb + xatlas
-```
+## Roadmap
+
+Progress is tracked in [`ROADMAP.md`](ROADMAP.md), and notes on work done in this repo are under [`docs/arctic/`](docs/arctic/) (index: [`docs/README.md`](docs/README.md)).
+The one open item there is attention scaling at very high token counts (around 45k tokens), where ggml's FlashAttention trails a
+varlen-style kernel.
+
+## Licences and credits
+
+Full list in [`NOTICE.md`](NOTICE.md); the essentials:
+
+- **ArcticMint / trellis.cpp** is released under the **MIT licence**, Copyright (c) 2026 Piotr Wilkin. See [`LICENSE`](LICENSE).
+  ArcticMint is derived from [pwilkin/trellis.cpp](https://github.com/pwilkin/trellis.cpp).
+- **TRELLIS.2** is by Microsoft ([microsoft/TRELLIS.2](https://github.com/microsoft/TRELLIS.2), MIT licence). The weights are
+  [`microsoft/TRELLIS.2-4B`](https://huggingface.co/microsoft/TRELLIS.2-4B), also MIT per the model card.
+- **DINOv3** (Meta): the image encoder is DINOv3 ViT-L/16, distributed under the
+  [DINOv3 License](https://github.com/facebookresearch/dinov3/blob/main/LICENSE.md), not MIT. If you redistribute the weights or
+  converted GGUFs you must do so under that agreement and include a copy of it; research publications must acknowledge the use.
+  The text has no "Built with DINOv3" requirement. See [`NOTICE.md`](NOTICE.md).
+- **BiRefNet** ([ZhengPeng7/BiRefNet](https://huggingface.co/ZhengPeng7/BiRefNet)) performs background removal (MIT).
+- **ggml** is the tensor library, a git submodule at `thirdparty/ggml` pointing at a fork. Vendored in `thirdparty/`: stb, xatlas, cpp-httplib, fqms and meshoptimizer.
+- **GGUF conversions**: the converted model files are derivatives of the source models above. Their licence is listed as
+  *other / see source model*; each component stays under its original licence.
+- Optional: [Pixal3D](https://github.com/TencentARC/Pixal3D) (TencentARC, MIT), which `--model pixal3d` runs.

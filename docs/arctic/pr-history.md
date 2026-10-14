@@ -1,8 +1,8 @@
 # PR history from the old public fork
 
-These pull requests were merged in the old public fork `aidenbutler001-ui/ArcticMint_trellis.cpp`, before the engine
-moved to this private repo on 2026-10-11. Their commits are in this repo's history; the descriptions are kept here
-because they lived only on GitHub.
+These pull requests were merged in an earlier fork, `aidenbutler001-ui/ArcticMint_trellis.cpp`, before the engine moved to
+this repository on 2026-10-11. Their commits are in this repo's history; the descriptions are kept here because they
+lived only on GitHub.
 
 ## #1 Add arctic-post: CPU post-processing profiling tools (merged 2026-10-11)
 

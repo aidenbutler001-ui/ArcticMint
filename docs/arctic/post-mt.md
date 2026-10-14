@@ -1,11 +1,9 @@
-# Arctic: multithreaded CPU post-processing (`claude/arctic-post-mt`)
+# Multithreaded CPU post-processing
 
-Repo: `aidenbutler001-ui/ArcticMint` (private, standalone). This work started in the old public fork
-`ArcticMint_trellis.cpp` (merged there as PR #2; see `docs/arctic/pr-history.md`); that fork is being deleted.
+ArcticMint's own work, started in an earlier fork (see [`pr-history.md`](pr-history.md)).
 
 Goal: make weld / hole fill / BVH / remesh / clean much faster using sort-based flat data structures and `std::thread`,
-with output byte-identical to the original code. Plan and profile: project repo
-`research/notes/arctic-post-profile.md`.
+with output byte-identical to the original code.
 
 ## Switches
 
@@ -53,7 +51,7 @@ part is the edge use-count map (25-35 s at 16.5M faces); the boundary set itself
 
 `TRELLIS_POST_CANON_HOLES=1` finds the boundary edges with a parallel sorted edge CSR (`post::boundary_edges`) and
 processes loops in ascending vertex id (so a loop starts at its smallest vertex). Default is still the legacy
-order and is byte-identical to before. **Re-baselining to the canonical order needs Aiden's approval.**
+order and is byte-identical to before. **Re-baselining to the canonical order is a maintainer decision and has not been taken.**
 
 Measured on d1024 (4.98M raw faces, same hole set both ways):
 
@@ -73,7 +71,7 @@ different loop there; this is order-dependence the legacy code already has betwe
 `post-equiv-test` checks canonical mode is identical at 1,2,3,4,7,16 threads and, for `fill_small_holes`, that it
 fills the same number of loops and leaves the same boundary set as legacy.
 
-## Follow-up for the PC: CUDA device for `decimate_qem_gpu` (task B0)
+## Follow-up for the PC: CUDA device for `decimate_qem_gpu`
 
 `src/decimate_qem.cu` never calls `cudaSetDevice`; it uses the calling thread's current device.
 - `trellis-cli` runs QEM on the main thread after the texture/shape decode. ggml's CUDA backend is process-wide
@@ -81,7 +79,7 @@ fills the same number of loops and leaves the same boundary set as legacy.
   buffer operation, so the current device is still the one picked by `--gpu` at QEM time. Low risk.
 - Real cases that land on CUDA device 0 (the 3060 Ti with `CUDA_DEVICE_ORDER=PCI_BUS_ID`): `post-replay` (never
   touches ggml) and any run where no ggml GPU op ran on that thread (e.g. all models on CPU).
-- Not changed here: no nvcc in the cloud container, so a `.cu` edit could not be compile-checked. If wanted, add a
+- Not changed here: no nvcc in the build environment used here, so a `.cu` edit could not be compile-checked. If wanted, add a
   small `cudaSetDevice(g_post_cuda_device)` hook in `decimate_qem_gpu`, set from `cfg.gpu`.
 - To confirm on the PC, log `int d; cudaGetDevice(&d); fprintf(stderr, "[decimate_qem_gpu] device %d\n", d);` at
   the top of `decimate_qem_gpu` and check it equals the `--gpu` device (peak allocation at 30M faces is ~3-5 GB, so
@@ -109,7 +107,7 @@ d512b final GLB (timestamp zeroed) fd4048a1a0b46d30. The raw `glb` lines in `pos
 `TRELLIS_POST_LEGACY=1` (also checked: two runs of the untouched original binary differ only in that timestamp).
 Full tables: see `docs/arctic/post-mt-golden.txt`.
 
-## Timings (seconds, 4 vCPU container, d1024 = 4.98M raw faces -> 9.1M after remesh)
+## Timings (seconds, 4 vCPU machine, d1024 = 4.98M raw faces -> 9.1M after remesh)
 
 | Stage | legacy | new, 4 threads | identical |
 |---|---|---|---|
@@ -122,7 +120,7 @@ Full tables: see `docs/arctic/post-mt-golden.txt`.
 | drop_components | 0.6 | 0.6 | yes |
 | front chain wall / peak RSS | 66.7 s / 1.73 GB | 33.6 s / 1.47 GB | yes |
 
-## Results at the PC's size: 16.45M raw faces -> 29.4M after remesh (`dC.bin`, 4 vCPU container)
+## Results at the PC's size: 16.45M raw faces -> 29.4M after remesh (`dC.bin`, 4 vCPU machine)
 
 Generated with `gen_dump.py dC.bin --N 1024 --pbr-res 512 --seed 5 --shell 0.03 --amp 2.0 --scale 1.2`; run with
 `--geometry-res 1024 --band 2 --fill-holes --no-audit --stop-before-qem`. Per-stage vertex and face hashes
@@ -180,4 +178,4 @@ chunk of voxels and concatenated in chunk order. `tools/arctic-post/dualgrid_ben
 from a dump (parent-major order like the C2S output, optional duplicate coordinates) and compares byte for byte at
 1,2,4,7,16 threads: identical. 7.97M voxels at res 1024: legacy 3.3 s, new 4.5 s (1 thread) / 2.2 s (2) / 1.2 s (4).
 Small because the stage is cheap; forced single-thread runs are ~1 s slower than legacy (`TRELLIS_POST_LEGACY=1`
-restores it). Real shape-decoder features were not available in the cloud, so the features are random.
+restores it). Real shape-decoder features were not available there, so the features are random.

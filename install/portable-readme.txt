@@ -1,6 +1,9 @@
 Trellis Studio - portable (no-install) build
 ============================================
 
+Note: inherited from upstream pwilkin/trellis.cpp and not tested by ArcticMint.
+The runtime and models named below are upstream's release assets.
+
 This is a self-contained build: everything stays inside this folder and nothing
 is written to the system (no installer, no AppData / registry / config dirs).
 

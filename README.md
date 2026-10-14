@@ -1,4 +1,4 @@
-<p align="center"><img src="assets/logo.svg" alt="A small mint plant growing on a piece of arctic ice" width="360"></p>
+<p align="center"><img src="assets/logo.png" alt="ArcticMint logo: a small mint plant on a piece of arctic ice" width="240"></p>
 
 <h1 align="center">ArcticMint</h1>
 

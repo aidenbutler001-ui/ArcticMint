@@ -45,7 +45,11 @@ bool stage_timing() {
     return g_stage_timing > 0;
 }
 
-void set_stage_timing(bool on) { if (on) g_stage_timing = 1; }
+void set_stage_timing(bool on) {
+    if (on) g_stage_timing = 1;
+    g_stages.clear();   // a long-lived server must not carry rows over from an earlier run
+    g_stage_name.clear();
+}
 
 static void stage_close(std::chrono::steady_clock::time_point now) {
     if (!g_stage_name.empty())

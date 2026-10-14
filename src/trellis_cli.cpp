@@ -272,7 +272,7 @@ int trellis_run(const trellis::TrellisParams& cfg) {
             printf("      bg-removal cutout -> %s\n", cut_png.c_str());
         else
             fprintf(stderr, "      [warn] could not write bg-removal cutout to %s\n", cut_png.c_str());
-        if (cfg.bg_only) { printf("[bg-only] done (%.1fs)\n", now() - t0); return 0; }
+        if (cfg.bg_only) { trellis::stage_report(); printf("[bg-only] done (%.1fs)\n", now() - t0); return 0; }
     }
 
     // Raw [0,1] guides for NAF. The DINOv3 branch wants the ImageNet-normalized tensor; NAF's
@@ -394,6 +394,7 @@ int trellis_run(const trellis::TrellisParams& cfg) {
             return 1;
         }
         fclose(sf);
+        trellis::stage_report();
         printf("[ss-only] %zu seed(s) -> %s (%.1fs)\n", ss_runs.size(), ss_path.c_str(), now() - t0);
         return 0;
     }
@@ -769,6 +770,7 @@ int trellis_run(const trellis::TrellisParams& cfg) {
         // Binary layout matches the TRELLIS_DUMP_POST debug env:
         // i32 V,F,Mv,res; f32 verts[V*3]; i32 faces[F*3]; i32 coords[Mv*3];
         // f32 pbr6[Mv*6] (base_color.rgb, metallic, roughness, alpha in [0,1]).
+        trellis::stage_mark("dump_post_cleanup");
         trellis::weld_vertices(mesh.verts, mesh.faces, nullptr,
                                1.0f / ((float)so.res * 8.0f));
         trellis::fill_small_holes(mesh.faces);
@@ -871,7 +873,8 @@ int trellis_run(const trellis::TrellisParams& cfg) {
             }
             printf("      [dump] secondary PBR on the same geometry -> %s\n", dual_pbr_path);
         }
-        if (std::getenv("TRELLIS_STOP_AFTER_POST_DUMP")) return 0;
+        if (std::getenv("TRELLIS_STOP_AFTER_POST_DUMP")) { trellis::stage_report(); return 0; }
+        if (cfg.retopo) trellis::stage_mark("retopo_driver");
         if (cfg.retopo) {
 #if defined(__linux__) || defined(_WIN32)
             const fs::path quad_glb=retopo_run/"model.glb";
@@ -967,6 +970,7 @@ int trellis_run(const trellis::TrellisParams& cfg) {
                 fs::remove(staged);
                 return 1;
             }
+            trellis::stage_report();
             printf("done in %.1fs -> %s (quad audit: %s)\n",now()-t0,
                    outglb.c_str(),(retopo_run/"model.retopo-accepted.json").string().c_str());
             return 0;
@@ -1002,6 +1006,7 @@ int trellis_run(const trellis::TrellisParams& cfg) {
         // 50+ pieces). The faithful QEM simplifier below handles surface smoothing via its
         // quadric + skinny-triangle cost, so no Taubin pre-pass is needed (and none is applied,
         // which keeps the mesh aligned to the voxel PBR volume for correct texture sampling).
+        trellis::stage_mark("remesh_cleanup");
         if (rm.F() > 0) {
             trellis::clean_mesh(rm.V(), rm.faces);
             trellis::post::hash_report("clean_mesh", rm.verts, rm.faces);
@@ -1012,7 +1017,6 @@ int trellis_run(const trellis::TrellisParams& cfg) {
                 fflush(stdout);
             }
         }
-        trellis::stage_mark("remesh_cleanup");
         const std::vector<float>& sverts = rm.F() > 0 ? rm.verts : mesh.verts;
         const std::vector<int32_t>& sfaces = rm.F() > 0 ? rm.faces : mesh.faces;
         trellis::stage_mark("simplify");
@@ -1098,10 +1102,12 @@ int trellis_run(const trellis::TrellisParams& cfg) {
         fprintf(stderr,"[trellis] textured POST unavailable for retopo\n");
         return 1;
     }
+    if (!textured) trellis::stage_mark("write_glb");
     if (!textured)
         trellis::write_glb(outglb.c_str(), mesh.verts.data(), mesh.V(), mesh.faces.data(), mesh.F(),
                            colors.empty() ? nullptr : colors.data(), run_seed,
                            cfg.copyright.empty() ? nullptr : cfg.copyright.c_str());
+    trellis::stage_mark("write_ply");
     std::string ply = outglb.substr(0, outglb.find_last_of('.')) + ".ply";
     trellis::write_ply(ply.c_str(), mesh.verts.data(), mesh.V(), mesh.faces.data(), mesh.F(), colors.empty() ? nullptr : colors.data());
     trellis::stage_report();

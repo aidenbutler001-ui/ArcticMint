@@ -35,20 +35,9 @@ cards busy: a multithreaded CPU post-processing stage, a parallel batch runner, 
 
 ## Pipeline
 
-```mermaid
-flowchart TD
-    P["Text prompt<br/>(optional, outside this repo)"] -.-> T["Any text-to-image model<br/>(optional, outside this repo)"]
-    T -.-> A
-    A[RGB image] --> B[BiRefNet background removal]
-    B --> C[DINOv3 ViT-L/16 conditioning tokens]
-    C --> D["1. Sparse-structure flow DiT<br/>(dense 16^3) -> 64^3 occupancy"]
-    D --> E["2. Shape SLAT flow DiT<br/>-> shape decoder -> dual-grid mesh"]
-    E --> F["3. Texture SLAT flow DiT<br/>-> 6-channel PBR per voxel"]
-    F --> G["CPU post: weld, hole fill, dual-contouring remesh,<br/>QEM decimation, xatlas UVs, PBR bake"]
-    G --> H[UV-textured GLB]
-```
+<p align="center"><img src="assets/pipeline.svg" alt="ArcticMint pipeline: optional prompt and text-to-image model, RGB image, BiRefNet, DINOv3, three flow stages, CPU post-processing, GLB" width="100%"></p>
 
-The dashed arrows and the two top boxes are the optional prompt step described in [From a prompt to a model](#from-a-prompt-to-a-model); the engine
+The dashed boxes and arrows are the optional prompt step described in [From a prompt to a model](#from-a-prompt-to-a-model); the engine
 itself starts at the RGB image.
 
 The three flow stages use a rectified-flow Euler sampler (12 steps by default) with classifier-free guidance. The

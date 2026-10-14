@@ -4,7 +4,7 @@ A sentence in, a textured GLB out. Part of ArcticMint; Python standard library o
 
 > **Status.** Unit-tested against a fake ComfyUI and a fake engine (no GPU needed). The authors have run the FLUX.2-klein-4B path
 > end to end once on their PC (ComfyUI on an RTX 3060 Ti, 2026-10-14): about 10 s for the 1024 picture,
-> 328 s for the whole run. The Z-Image-Turbo path and other machines have not been run.
+> 328 s for the whole run (one run, so treat the numbers as an example, not a benchmark). The Z-Image-Turbo path and other machines have not been run.
 
 The engine (`trellis-cli`) reads a picture, not text. `prompt_to_model.py` adds the missing first step:
 
@@ -40,7 +40,7 @@ python tools\prompt-to-model\prompt_to_model.py "a weathered wooden treasure che
 | `--comfy-url URL` | the running ComfyUI (default `http://127.0.0.1:8188`) |
 | `--image-model klein\|zimage` | FLUX.2-klein-4B (default) or Z-Image-Turbo |
 | `--style 3d-ready\|none` | `3d-ready` appends single-object framing words (centered, whole silhouette, plain light grey background, soft light, no shadow); `none` sends your prompt as typed |
-| `--seed N` / `--size PX` | picture seed (also the 3D seed) and picture side (a multiple of 16), default 1 and 1024 |
+| `--seed N` / `--size PX` | picture seed (also the 3D seed) and picture side (a multiple of 16). Defaults: seed 1, or with `--image` the `_s<seed>` in the picture's file name; size 1024 |
 | `--picture-only`, `--count N` | stop after the picture; `--count` makes seeds `SEED..SEED+N-1` to choose from |
 | `--image FILE` | skip the picture step and run the engine on the picture you picked; if a `--picture-only` run made it, its prompt and settings carry over into the new `.json` |
 | `--gpu N` | passed to `trellis-cli` with `--require-gpu` (a wrong index fails at once instead of running on the CPU); also sets `CUDA_DEVICE_ORDER=PCI_BUS_ID`, so `N` is the `nvidia-smi` index |
@@ -63,15 +63,17 @@ Exit code 0 means a picture (with `--picture-only`) or a GLB was written; 1 mean
 
 ### Quoting prompts on Windows PowerShell
 
-Windows PowerShell 5.1 strips double quotes that are inside a prompt before Python sees them (`"brass" helmet` arrives as `brass helmet`).
-Use single quotes around the prompt, or put the prompt in a file:
+On the authors' PC, Windows PowerShell 5.1 passed apostrophes (single quotes) inside a prompt through intact but dropped double quotes
+inside it before Python saw them (`"brass" helmet` arrived as `brass helmet`). No wrapping or escaping style was found to bring them back,
+so for a prompt that contains double quotes use a file:
 
 ```powershell
-python tools\prompt-to-model\prompt_to_model.py 'a helmet with the word "NAUTILUS" painted on it' -o out\helmet --models D:\models\gguf
 python tools\prompt-to-model\prompt_to_model.py --prompt-file prompt.txt -o out\helmet --models D:\models\gguf
 ```
 
-(The tool reads the file as UTF-8, with or without a byte-order mark, and joins its lines into one.)
+`--prompt-file` reads UTF-8 (with or without a byte-order mark) or UTF-16 with a byte-order mark, which is what `>` and `Out-File` write in
+Windows PowerShell 5.1, and joins the lines into one. `Set-Content` writes the ANSI code page in 5.1; the tool refuses such a file with
+a message to save it as UTF-8. The unit tests cover these encodings; the PowerShell behaviour itself has not been re-run here.
 
 ## Writing prompts that work
 
@@ -95,7 +97,7 @@ The three `klein` file names were checked on a real PC: they are the names of th
 
 **One card or two.** The image model and the engine run one after the other, never together. After the picture the tool asks ComfyUI
 to unload its models (`/free`). On the authors' PC this worked: the 8 GB RTX 3060 Ti fell back to about 211 MiB used once the tool
-exited, and klein at 1024 ran on it at about 10 s per picture. With two GPUs you can keep ComfyUI on one card and give the engine the
+exited, and klein at 1024 took about 10 s per picture; both figures come from that one run. With two GPUs you can keep ComfyUI on one card and give the engine the
 other with `--gpu`. Pick ComfyUI's card by the same index the engine uses: `--cuda-device` alone sets `CUDA_VISIBLE_DEVICES`, and CUDA's
 default order is fastest first, which is not the `nvidia-smi` order. In PowerShell:
 
@@ -103,7 +105,7 @@ default order is fastest first, which is not the `nvidia-smi` order. In PowerShe
 $env:CUDA_DEVICE_ORDER = 'PCI_BUS_ID'; python main.py --cuda-device 0 --port 8188   # ComfyUI on nvidia-smi index 0
 ```
 
-and then `--gpu 1` for the engine. With `PCI_BUS_ID` set, ComfyUI landed on the RTX 3060 Ti (index 0) as intended. The tool does not start
+and then `--gpu 1` for the engine. In that run, with `PCI_BUS_ID` set, ComfyUI landed on the RTX 3060 Ti (index 0) as intended. The tool does not start
 ComfyUI; start it yourself and pass `--comfy-url` if it is not on port 8188.
 
 ## Tests

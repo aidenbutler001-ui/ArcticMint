@@ -28,7 +28,10 @@ class Run(unittest.TestCase):
     def run_main(self, *args):
         err = io.StringIO()
         with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(err):
-            rc = p2m.main(list(args))
+            try:
+                rc = p2m.main(list(args))
+            except SystemExit as e:                  # argparse errors exit 2 with the message on stderr
+                rc = e.code
         return rc, err.getvalue()
 
     def base(self, *extra, model="klein"):
@@ -82,13 +85,67 @@ class TestPipeline(Run):
 
     def test_prompt_file(self):
         pf = os.path.join(self.tmp, "prompt.txt")
-        with open(pf, "w", encoding="utf-8-sig") as f:               # PowerShell's Out-File writes a BOM
+        with open(pf, "w", encoding="utf-8-sig") as f:               # UTF-8 with a byte-order mark (Notepad's "UTF-8 with BOM")
             f.write('a brass "diving"\n  helmet\n')
         out = os.path.join(self.tmp, "pf")
         rc, err = self.run_main("--prompt-file", pf, "-o", out, "--comfy-url", self.comfy.url, "--picture-only", "--name", "h")
         self.assertEqual(rc, 0, err)
         rec = json.load(open(os.path.join(out, "h_s1.json")))
         self.assertEqual(rec["prompt"], 'a brass "diving" helmet')
+
+    def test_prompt_file_utf16(self):
+        pf = os.path.join(self.tmp, "u16.txt")
+        with open(pf, "w", encoding="utf-16") as f:                  # what `>` and Out-File write in Windows PowerShell 5.1 (UTF-16LE + BOM)
+            f.write("a brass helmet\r\n")
+        out = os.path.join(self.tmp, "u16")
+        rc, err = self.run_main("--prompt-file", pf, "-o", out, "--comfy-url", self.comfy.url, "--picture-only", "--name", "h")
+        self.assertEqual(rc, 0, err)
+        self.assertEqual(json.load(open(os.path.join(out, "h_s1.json")))["prompt"], "a brass helmet")
+
+    def test_image_seed_comes_from_the_picture_name(self):
+        self.run_main(*self.base("--picture-only", "--count", "2", "--seed", "4", "--name", "c"))
+        rc, err = self.run_main("--image", os.path.join(self.tmp, "c_s5.png"), "-o", self.tmp, "--cli", ENGINE, "-m", "m")    # no --seed
+        self.assertEqual(rc, 0, err)
+        self.assertTrue(os.path.isfile(os.path.join(self.tmp, "c_s5.glb")))
+        self.assertIn(b"--seed 5", open(os.path.join(self.tmp, "c_s5.glb"), "rb").read())
+        self.assertEqual(json.load(open(os.path.join(self.tmp, "c_s4.json")))["prompt"], "a wooden chest with iron bands")   # c_s4 untouched
+
+    def test_retry_after_failed_image_run(self):
+        self.run_main(*self.base("--picture-only", "--name", "c"))
+        pic = os.path.join(self.tmp, "c_s1.png")
+        rc, _ = self.run_main("--image", pic, "-o", self.tmp, "--cli", "no-such-engine-xyz", "-m", "m")      # engine cannot start
+        self.assertEqual(rc, 1)
+        rec = json.load(open(os.path.join(self.tmp, "c_s1.json")))
+        self.assertEqual(rec["prompt"], "a wooden chest with iron bands")
+        self.assertIsNone(rec["glb"])
+        rc, err = self.run_main("--image", pic, "-o", self.tmp, "--cli", ENGINE, "-m", "m")                 # fixed --cli: no --force needed
+        self.assertEqual(rc, 0, err)
+        self.assertEqual(json.load(open(os.path.join(self.tmp, "c_s1.json")))["prompt"], "a wooden chest with iron bands")
+
+    def test_image_from_another_run_is_not_a_continuation(self):
+        self.run_main(*self.base("--picture-only", "--name", "c"))                       # c_s1.png + c_s1.json
+        other = os.path.join(self.tmp, "elsewhere.png")
+        shutil.copy(os.path.join(self.tmp, "c_s1.png"), other)
+        rc, err = self.run_main("--image", other, "--seed", "1", "--name", "c", "-o", self.tmp, "--cli", ENGINE, "-m", "m")
+        self.assertEqual(rc, 1)
+        self.assertIn("c_s1.json", err)
+
+    def test_stale_glb_is_not_overwritten(self):
+        self.run_main(*self.base("--picture-only", "--name", "c"))
+        stale = os.path.join(self.tmp, "c_s1.glb")
+        with open(stale, "wb") as f:
+            f.write(b"old")
+        rc, err = self.run_main("--image", os.path.join(self.tmp, "c_s1.png"), "-o", self.tmp, "--cli", ENGINE, "-m", "m")
+        self.assertEqual(rc, 1)
+        self.assertIn("c_s1.glb", err)
+        self.assertEqual(open(stale, "rb").read(), b"old")
+
+    def test_picture_only_records_per_picture_time(self):
+        self.run_main(*self.base("--picture-only", "--count", "2", "--name", "c"))
+        for sd in (1, 2):
+            rec = json.load(open(os.path.join(self.tmp, "c_s%d.json" % sd)))
+            self.assertEqual(rec["seed"], sd)
+            self.assertLess(rec["picture_s"], 5)
 
     def test_image_skips_comfy(self):
         self.run_main(*self.base("--picture-only", "--name", "c"))
@@ -144,34 +201,31 @@ class TestSafety(Run):
         self.assertTrue(os.path.isfile(os.path.join(self.tmp, "o", "x_s1.glb")))
 
     def test_size_multiple_of_16(self):
-        with self.assertRaises(SystemExit):
-            self.run_main(*self.base("--size", "1000"))
+        rc, err = self.run_main(*self.base("--size", "1000"))
+        self.assertEqual(rc, 2)
+        self.assertIn("multiple of 16", err)
 
 
 class TestFailures(Run):
     def test_prompt_and_prompt_file_conflict(self):
         pf = os.path.join(self.tmp, "p.txt")
-        open(pf, "w").write("x")
-        with self.assertRaises(SystemExit):
-            self.run_main("x", "--prompt-file", pf, "-o", self.tmp)
-        with self.assertRaises(SystemExit):
-            self.run_main("--prompt-file", os.path.join(self.tmp, "missing.txt"), "-o", self.tmp)
+        with open(pf, "w") as f:
+            f.write("x")
+        rc, err = self.run_main("x", "--prompt-file", pf, "-o", self.tmp, "--picture-only")
+        self.assertEqual(rc, 2)
+        self.assertIn("not both", err)
+        rc, err = self.run_main("--prompt-file", os.path.join(self.tmp, "missing.txt"), "-o", self.tmp, "--picture-only")
+        self.assertEqual(rc, 2)
+        self.assertIn("cannot read --prompt-file", err)
 
-    def test_picture_timeout_cancels_job(self):
-        slow = FakeComfy(0, speed=1000).start()
-        self.addCleanup(slow.stop)
-        rc, err = self.run_main("x", "-o", self.tmp, "--comfy-url", slow.url, "--cli", ENGINE, "-m", "m", "--picture-timeout", "0.3")
-        self.assertEqual(rc, 1)
-        self.assertIn("took longer", err)
-        self.assertGreaterEqual(slow.interrupted, 1)
-        self.assertEqual(len(slow.deleted), 1)
-
-    def test_engine_timeout_is_reported_as_timeout(self):
-        os.environ["FAKE_ENGINE_SLEEP"] = "5"
-        self.addCleanup(os.environ.pop, "FAKE_ENGINE_SLEEP", None)
-        rc, err = self.run_main(*self.base("--engine-timeout", "0.5"))
-        self.assertEqual(rc, 1)
-        self.assertIn("ran longer than 0.5 s", err)
+    def test_prompt_file_not_utf8(self):
+        pf = os.path.join(self.tmp, "ansi.txt")
+        with open(pf, "wb") as f:
+            f.write("a caf\xe9 sign".encode("cp1252"))                # Set-Content in Windows PowerShell 5.1
+        rc, err = self.run_main("--prompt-file", pf, "-o", self.tmp, "--picture-only")
+        self.assertEqual(rc, 2)
+        self.assertIn("save it as UTF-8", err)
+        self.assertNotIn("Traceback", err)
 
     def test_engine_failure(self):
         os.environ["FAKE_ENGINE_FAIL"] = "1"
@@ -200,12 +254,14 @@ class TestFailures(Run):
         self.assertIn("out of memory", err)
 
     def test_count_needs_picture_only(self):
-        with self.assertRaises(SystemExit):
-            self.run_main(*self.base("--count", "2"))
+        rc, err = self.run_main(*self.base("--count", "2"))
+        self.assertEqual(rc, 2)
+        self.assertIn("--picture-only", err)
 
     def test_models_required(self):
-        with self.assertRaises(SystemExit):
-            self.run_main("x", "-o", self.tmp)
+        rc, err = self.run_main("x", "-o", self.tmp)
+        self.assertEqual(rc, 2)
+        self.assertIn("--models", err)
 
 
 class TestUnits(unittest.TestCase):

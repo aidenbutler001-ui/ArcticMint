@@ -54,6 +54,19 @@ def slug(text, limit=40):
     return s + "_" if s in RESERVED else s
 
 
+def picture_record(path, image):
+    """The JSON record of an earlier --picture-only run that made this picture (so --image can carry its prompt on), else None."""
+    try:
+        with open(path, encoding="utf-8") as f:
+            rec = json.load(f)
+    except (OSError, ValueError):
+        return None
+    if not isinstance(rec, dict) or "engine_exit" in rec:
+        return None
+    mine = os.path.normcase(os.path.abspath(image))
+    return rec if any(os.path.normcase(os.path.abspath(p)) == mine for p in rec.get("pictures") or []) else None
+
+
 def engine_cmd(cli):
     """--cli is one program path (possibly with spaces, unquoted by PowerShell) or a command line such as 'python fake.py'."""
     return [cli] if os.path.isfile(cli) or shutil.which(cli) else split_cmd(cli)
@@ -98,6 +111,7 @@ def run_engine(cmd, picture, glb, models, seed, gpu, extra, timeout):
 def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("prompt", nargs="?", help="what to make, one object, positive wording (\"exactly one wheel with eight spokes\")")
+    ap.add_argument("--prompt-file", help="read the prompt from this UTF-8 text file instead (no shell quoting to get wrong)")
     ap.add_argument("-o", "--out", required=True, help="output folder")
     ap.add_argument("--name", help="file name stem (default: from the prompt)")
     ap.add_argument("-m", "--models", help="folder with the engine's GGUF files (needed unless --picture-only)")
@@ -122,8 +136,16 @@ def main(argv=None):
         ap.error("--image and --picture-only do nothing together")
     if a.image and a.count != 1:
         ap.error("--count goes with the picture step; --image skips it")
+    if a.prompt_file:
+        if a.prompt:
+            ap.error("give the prompt as text or as --prompt-file, not both")
+        try:
+            with open(a.prompt_file, encoding="utf-8-sig") as f:
+                a.prompt = " ".join(f.read().split())
+        except OSError as e:
+            ap.error("cannot read --prompt-file: %s" % e)
     if not a.image and not a.prompt:
-        ap.error("give a prompt, or --image")
+        ap.error("give a prompt (text or --prompt-file), or --image")
     if a.count < 1:
         ap.error("--count is at least 1")
     if a.count > 1 and not a.picture_only:
@@ -144,7 +166,9 @@ def main(argv=None):
     stem = "%s_s%d" % (name, a.seed)
     glb, info = (os.path.join(a.out, stem + ext) for ext in (".glb", ".json"))
     pics = [] if a.image else [os.path.join(a.out, "%s_s%d.png" % (name, a.seed + i)) for i in range(a.count)]
-    targets = pics + ([glb] if not a.picture_only else []) + [info]
+    infos = [os.path.join(a.out, "%s_s%d.json" % (name, a.seed + i)) for i in range(a.count)] if pics else [info]
+    prior = picture_record(info, a.image) if a.image else None     # the --picture-only run that made this picture: carry it on, not clash
+    targets = pics + ([glb] if not a.picture_only else []) + [i for i in infos if not (prior and i == info)]
     clash = [t for t in targets if os.path.exists(t)]
     if clash and not a.force:
         print("error: would overwrite %s. Pick another --seed or --name, or pass --force." % ", ".join(clash), file=sys.stderr)
@@ -152,7 +176,8 @@ def main(argv=None):
     os.makedirs(a.out, exist_ok=True)
     for t in clash:                       # --force: a failed run must not leave an old result next to the new record
         os.remove(t)
-    record = {"prompt": a.prompt, "style": a.style, "seed": a.seed, "image_model": a.image_model if not a.image else None, "pictures": []}
+    record = dict(prior) if prior else {"prompt": a.prompt, "style": a.style, "seed": a.seed,
+                                        "image_model": a.image_model if not a.image else None, "pictures": []}
     t0 = time.time()
 
     if a.image:
@@ -176,7 +201,8 @@ def main(argv=None):
         finally:
             client.free()               # ask ComfyUI to hand the card back
     record["pictures"] = pictures
-    record["picture_s"] = round(time.time() - t0, 1)
+    if not a.image:
+        record["picture_s"] = round(time.time() - t0, 1)
 
     rc = 0
     if not a.picture_only:
@@ -191,9 +217,12 @@ def main(argv=None):
             print("error: the engine ran longer than %g s and was killed (--engine-timeout)" % a.engine_timeout, file=sys.stderr)
         elif rc is not None and rc != 0:
             print("error: the 3D step failed (exit %s)" % rc, file=sys.stderr)
-    with open(info, "w", encoding="utf-8") as f:
-        json.dump(record, f, indent=1)
-        f.write("\n")
+    # one record per picture, so each one can be picked later with --image
+    for i, path in enumerate(infos if a.picture_only else [info]):
+        rec = dict(record, seed=a.seed + i, pictures=[pictures[i]]) if a.picture_only else record
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(rec, f, indent=1)
+            f.write("\n")
     if rc == 0:
         print("done: " + (record.get("glb") or ", ".join(pictures)))
     return 0 if rc == 0 else 1

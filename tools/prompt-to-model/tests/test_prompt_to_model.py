@@ -65,6 +65,31 @@ class TestPipeline(Run):
             self.assertTrue(os.path.isfile(os.path.join(self.tmp, "chest_s%d.png" % s)))
         self.assertFalse(os.path.exists(os.path.join(self.tmp, "chest_s10.glb")))
 
+    def test_image_after_picture_only_keeps_prompt(self):
+        self.run_main(*self.base("--picture-only", "--count", "2", "--seed", "4", "--name", "c"))
+        rc, err = self.run_main("--image", os.path.join(self.tmp, "c_s5.png"), "--seed", "5", "-o", self.tmp, "--cli", ENGINE, "-m", "m")
+        self.assertEqual(rc, 0, err)                                     # no --force needed for the same run
+        rec = json.load(open(os.path.join(self.tmp, "c_s5.json")))
+        self.assertEqual(rec["prompt"], "a wooden chest with iron bands")
+        self.assertTrue(rec["final_prompt"].endswith(p2m.FRAMING))
+        self.assertEqual(rec["engine_exit"], 0)
+        self.assertEqual(rec["seed"], 5)
+        self.assertTrue(os.path.isfile(os.path.join(self.tmp, "c_s5.glb")))
+        self.assertFalse(os.path.exists(os.path.join(self.tmp, "c_s4.glb")))
+        again, err = self.run_main("--image", os.path.join(self.tmp, "c_s5.png"), "--seed", "5", "-o", self.tmp, "--cli", ENGINE, "-m", "m")
+        self.assertEqual(again, 1)                                       # a finished model is not silently replaced
+        self.assertIn("would overwrite", err)
+
+    def test_prompt_file(self):
+        pf = os.path.join(self.tmp, "prompt.txt")
+        with open(pf, "w", encoding="utf-8-sig") as f:               # PowerShell's Out-File writes a BOM
+            f.write('a brass "diving"\n  helmet\n')
+        out = os.path.join(self.tmp, "pf")
+        rc, err = self.run_main("--prompt-file", pf, "-o", out, "--comfy-url", self.comfy.url, "--picture-only", "--name", "h")
+        self.assertEqual(rc, 0, err)
+        rec = json.load(open(os.path.join(out, "h_s1.json")))
+        self.assertEqual(rec["prompt"], 'a brass "diving" helmet')
+
     def test_image_skips_comfy(self):
         self.run_main(*self.base("--picture-only", "--name", "c"))
         pic = os.path.join(self.tmp, "c_s1.png")
@@ -124,6 +149,14 @@ class TestSafety(Run):
 
 
 class TestFailures(Run):
+    def test_prompt_and_prompt_file_conflict(self):
+        pf = os.path.join(self.tmp, "p.txt")
+        open(pf, "w").write("x")
+        with self.assertRaises(SystemExit):
+            self.run_main("x", "--prompt-file", pf, "-o", self.tmp)
+        with self.assertRaises(SystemExit):
+            self.run_main("--prompt-file", os.path.join(self.tmp, "missing.txt"), "-o", self.tmp)
+
     def test_picture_timeout_cancels_job(self):
         slow = FakeComfy(0, speed=1000).start()
         self.addCleanup(slow.stop)

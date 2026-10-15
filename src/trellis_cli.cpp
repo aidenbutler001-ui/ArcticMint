@@ -200,10 +200,8 @@ int trellis_run(const trellis::TrellisParams& cfg) {
     // rather than a second copy of everything.
     const std::string FP = pix ? "/pixal3d_" : "/";
     const bool mv = pix && !cfg.views.empty();
-    if (!cfg.views.empty() && !pix) { fprintf(stderr, "[trellis] --views needs --model pixal3d
-"); return 1; }
-    if (cfg.view_azim.size() != cfg.views.size()) { fprintf(stderr, "[trellis] --views and --view-azim need the same number of entries
-"); return 1; }
+    if (!cfg.views.empty() && !pix) { fprintf(stderr, "[trellis] --views needs --model pixal3d\n"); return 1; }
+    if (cfg.view_azim.size() != cfg.views.size()) { fprintf(stderr, "[trellis] --views and --view-azim need the same number of entries\n"); return 1; }
     // multi-view flows are separate fine-tunes (same shapes); decoders, DINOv3, BiRefNet and NAF are shared
     const std::string FPF = mv ? "/pixal3d_mv_" : FP;
     trellis::CameraParams cam;
@@ -308,8 +306,7 @@ int trellis_run(const trellis::TrellisParams& cfg) {
     vector<ExtraView> extra;
     if (mv) {
         for (size_t vi = 0; vi < cfg.views.size(); ++vi) {
-            printf("[2/6] extra view %zu: %s (azimuth %.1f deg)
-", vi + 1, cfg.views[vi].c_str(), cfg.view_azim[vi]);
+            printf("[2/6] extra view %zu: %s (azimuth %.1f deg)\n", vi + 1, cfg.views[vi].c_str(), cfg.view_azim[vi]);
             ExtraView ev; ev.azim = cfg.view_azim[vi] * 3.14159265358979f / 180.0f;
             std::vector<unsigned char> vcut; int vsz = 0;
             if (birefnet) {
@@ -317,8 +314,7 @@ int trellis_run(const trellis::TrellisParams& cfg) {
                 vcut = trellis::birefnet_cutout(cfg.views[vi], bm, gpu < 0 ? 0 : gpu, vsz);
                 bm.free();
             } else vcut = trellis::threshold_cutout(cfg.views[vi], vsz);
-            if (vcut.empty()) { fprintf(stderr, "[trellis] cannot read view %s
-", cfg.views[vi].c_str()); return 1; }
+            if (vcut.empty()) { fprintf(stderr, "[trellis] cannot read view %s\n", cfg.views[vi].c_str()); return 1; }
             vector<float> vchw = trellis::normalize_cutout(vcut, vsz, 512), vchw1024;
             if (cascade) vchw1024 = trellis::normalize_cutout(vcut, vsz, 1024);
             if (cfg.naf) {
@@ -336,8 +332,7 @@ int trellis_run(const trellis::TrellisParams& cfg) {
             float a = cond[i]; for (auto& e : extra) a += e.dino[i]; cond[i] = a / nv;
             if (cascade) { float b = cond1024[i]; for (auto& e : extra) b += e.dino1024[i]; cond1024[i] = b / nv; }
         }
-        printf("      multi-view: %zu views, global tokens averaged
-", extra.size() + 1);
+        printf("      multi-view: %zu views, global tokens averaged\n", extra.size() + 1);
     }
     const int Lc = (int)(cond.size() / 1024);
     vector<float> neg(cond.size(), 0.0f);

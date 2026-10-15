@@ -90,16 +90,11 @@ void print_usage(const char* argv0, bool server) {
         "                          pixels of a 512 frame (default 0). Rarely useful: background\n"
         "                          removal already reframes around the subject, and extending\n"
         "                          past the cutout projects onto pixels that do not exist.\n"
-        "      --views A.png,B.png pixal3d multi-view: extra pictures of the same object after the
-"
-        "      --view-azim 180,90  main one, and each one's camera azimuth in degrees (0 = main camera,
-"
-        "                          counter-clockwise from above; 180 = the back). Needs the
-"
-        "                          pixal3d_mv_*.gguf flow weights. Each view is matted and cropped on
-"
-        "                          its own, so the same --fov applies to all.
-"
+        "      --views A.png,B.png pixal3d multi-view: extra pictures of the same object after the\n"
+        "      --view-azim 180,90  main one, and each one's camera azimuth in degrees (0 = main camera,\n"
+        "                          counter-clockwise from above; 180 = the back). Needs the\n"
+        "                          pixal3d_mv_*.gguf flow weights. Each view is matted and cropped on\n"
+        "                          its own, so the same --fov applies to all.\n"
         "      --no-naf            pixal3d: skip NAF guided upsampling (needs no naf.gguf, but\n"
         "                          the shape/texture stages then lose their high-frequency\n"
         "                          projection branch)\n"
@@ -234,8 +229,7 @@ bool parse_args(int argc, char** argv, TrellisParams& p) {
                 if (a == "--views") p.views.push_back(t);
                 else {
                     char* e = nullptr; const float d = std::strtof(t.c_str(), &e);
-                    if (t.empty() || *e || !std::isfinite(d)) { fprintf(stderr, "[trellis] --view-azim wants comma-separated degrees
-"); return false; }
+                    if (t.empty() || *e || !std::isfinite(d)) { fprintf(stderr, "[trellis] --view-azim wants comma-separated degrees\n"); return false; }
                     p.view_azim.push_back(d);
                 }
                 i = j + 1;

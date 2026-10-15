@@ -90,10 +90,17 @@ def nearest_fill(coords, known):
     if len(unk) == 0 or len(kidx) == 0:
         return out
     kc = coords[kidx].astype(np.float32)
-    for s in range(0, len(unk), 2048):
-        q = coords[unk[s:s + 2048]].astype(np.float32)
+    # Hidden voxels are searched per 4x4x4 cell (the cell's first voxel stands for it): a brute-force search per
+    # voxel is hours at 2M voxels, and hidden colours only need to be locally smooth.
+    cell = coords[unk] >> 2
+    key = (cell[:, 0].astype(np.int64) << 40) | (cell[:, 1].astype(np.int64) << 20) | cell[:, 2].astype(np.int64)
+    _, first, inv = np.unique(key, return_index=True, return_inverse=True)
+    res = np.empty(len(first), np.int64)
+    for s in range(0, len(first), 2048):
+        q = coords[unk[first[s:s + 2048]]].astype(np.float32)
         d2 = ((q[:, None, :] - kc[None, :, :]) ** 2).sum(-1)
-        out[unk[s:s + 2048]] = kidx[d2.argmin(1)]
+        res[s:s + 2048] = kidx[d2.argmin(1)]
+    out[unk] = res[inv.ravel()]
     return out
 
 

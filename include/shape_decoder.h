@@ -31,4 +31,16 @@ std::vector<float> tex_decode(const Model& m, const std::vector<float>& tex_late
                               const std::vector<std::array<int,3>>& coords0,
                               const std::vector<std::vector<uint8_t>>& subs);
 
+// Texture VAE encoder (SparseUnetVaeEncoder, tex_enc.gguf): the inverse of tex_decode. pbr6 is
+// [6*N] channel-major (base colour RGB, metallic, roughness, alpha) in the decoder's output
+// range [-1,1] at the full-resolution voxel coords; returns the posterior mean/logvar
+// ([32*P] each) on the res/16 grid, with the grid's coords (sorted by x,y,z, NOT the shape
+// latent's order: remap by coordinate before mixing with the flow's latent).
+struct TexEncOut {
+    std::vector<float> mean, logvar;
+    std::vector<std::array<int,3>> coords;
+};
+TexEncOut tex_encode(const Model& m, const std::vector<float>& pbr6,
+                     const std::vector<std::array<int,3>>& coords);
+
 } // namespace trellis

@@ -178,4 +178,60 @@ std::vector<float> tex_decode(const Model& m, const std::vector<float>& tex_late
     return decode_unet(m, tex_latent, 6, coords, &subs, nullptr);   // 6-ch PBR at the same final coords
 }
 
+// One encoder stage of ConvNeXt blocks: whole-stage graph while small, host-streamed once the
+// feature table gets large (same threshold idea as decode_unet).
+static void convnext_stage(const Model& m, std::vector<float>& h, int C, int nblk, int stage,
+                           const std::vector<std::array<int,3>>& coords) {
+    if (nblk == 0) return;
+    const int N = (int)coords.size();
+    std::vector<int32_t> nbr = build_neighbor_table(coords);
+    size_t stream_at = 512ull * 1024 * 1024;
+    if (const char* e = getenv("TRELLIS_CONVNEXT_STREAM_GB")) {
+        const double gb = atof(e);
+        if (gb > 0.0) stream_at = (size_t)(gb * 1024.0 * 1024.0 * 1024.0);
+    }
+    const bool stream = getenv("TRELLIS_CONVNEXT_STREAM_ALL") || (size_t)C * N * sizeof(float) >= stream_at;
+    if (!stream) {
+        ggml_context* c = mkctx();
+        T* gh = ggml_new_tensor_2d(c, GGML_TYPE_F32, C, N); ggml_set_input(gh);
+        T* gn = ggml_new_tensor_2d(c, GGML_TYPE_I32, N, 27); ggml_set_input(gn);
+        T* x = gh;
+        for (int j = 0; j < nblk; ++j)
+            x = sparse_convnext(c, m, "blocks." + std::to_string(stage) + "." + std::to_string(j), x, gn, N);
+        h = run1(m, c, x, { {gh, h.data()}, {gn, nbr.data()} });
+        ggml_free(c);
+    } else {
+        for (int j = 0; j < nblk; ++j)
+            h = sparse_convnext_streamed(m, "blocks." + std::to_string(stage) + "." + std::to_string(j), h, C, nbr, N);
+    }
+}
+
+TexEncOut tex_encode(const Model& m, const std::vector<float>& pbr6,
+                     const std::vector<std::array<int,3>>& coords0) {
+    TexEncOut eo;
+    eo.coords = coords0;
+    int N = (int)eo.coords.size();
+    if (pbr6.size() != (size_t)6 * N) throw std::runtime_error("tex_encode: pbr6 must be [6*N]");
+    std::vector<float> h = linear_rows(m, pbr6, 6, N, "input_layer", 64, false);
+    // 5 stages; a down block (S2C) after each of the first four. Stage 0 has no ConvNeXt
+    // blocks, so its S2C is blocks.0.0; later stages put the S2C after their ConvNeXt blocks.
+    const int C[5] = { 64, 128, 256, 512, 1024 };
+    const int nblk[5] = { 0, 4, 8, 16, 4 };
+    for (int si = 0; si < 5; ++si) {
+        convnext_stage(m, h, C[si], nblk[si], si, eo.coords);
+        if (si == 4) break;
+        S2CResult r = sparse_s2c(m, "blocks." + std::to_string(si) + "." + std::to_string(nblk[si]),
+                                 h, C[si], eo.coords, C[si + 1]);
+        h = std::move(r.feats); eo.coords = std::move(r.coords); N = (int)eo.coords.size();
+    }
+    // final LN (no affine) + to_latent 1024 -> 64 = mean(32) | logvar(32)
+    std::vector<float> ml = linear_rows(m, h, 1024, N, "to_latent", 64, true);
+    eo.mean.resize((size_t)32 * N); eo.logvar.resize((size_t)32 * N);
+    for (int i = 0; i < N; ++i) {
+        std::copy_n(ml.data() + (size_t)64 * i, 32, eo.mean.data() + (size_t)32 * i);
+        std::copy_n(ml.data() + (size_t)64 * i + 32, 32, eo.logvar.data() + (size_t)32 * i);
+    }
+    return eo;
+}
+
 } // namespace trellis

@@ -41,4 +41,14 @@ C2SResult sparse_c2s(const Model& m, const std::string& prefix,
                      const std::vector<std::array<int,3>>& coords, int Cout,
                      const std::vector<uint8_t>* ext_subdiv = nullptr);
 
+// SparseResBlockS2C3d down-block (space->channel x2), the mirror of sparse_c2s used by the
+// texture VAE encoder: norm1+SiLU -> conv1 (Cin -> Cout/8) -> stack the 8 sibling voxels into
+// channels -> norm2+SiLU -> conv2 (Cout) + skip (stacked input, viewed [Cout, 8*Cin/Cout],
+// averaged). feats_in is [Cin*N] channel-major; returns [Cout*P] and the parent coords
+// (res/2, sorted by x,y,z). Needs Cout % 8 == 0 and (8*Cin) % Cout == 0.
+struct S2CResult { std::vector<float> feats; std::vector<std::array<int,3>> coords; int C = 0; };
+S2CResult sparse_s2c(const Model& m, const std::string& prefix,
+                     const std::vector<float>& feats_in, int Cin,
+                     const std::vector<std::array<int,3>>& coords, int Cout);
+
 } // namespace trellis

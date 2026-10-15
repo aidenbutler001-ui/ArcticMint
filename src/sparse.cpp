@@ -1,4 +1,5 @@
 #include "sparse.h"
+#include "s2c_host.h"
 #include "trellis_model.h"
 #include "trellis_debug.h"
 #include "trellis_sched.h"
@@ -570,6 +571,98 @@ C2SResult sparse_c2s(const Model& m, const std::string& prefix,
     }
 
     return { std::move(outv), std::move(nc), Cout, std::move(mask_used) };
+}
+
+S2CResult sparse_s2c(const Model& m, const std::string& prefix,
+                     const std::vector<float>& feats_in, int Cin,
+                     const std::vector<std::array<int,3>>& coords, int Cout) {
+    const int N = (int)coords.size();
+    if (N == 0) throw std::runtime_error("s2c: empty input coordinate set in " + prefix);
+    if (Cin <= 0 || Cout <= 0 || Cout % 8 != 0 || (8 * Cin) % Cout != 0 || feats_in.size() != (size_t)Cin * N)
+        throw std::runtime_error("s2c: invalid channel/feature shape in " + prefix);
+    const int K = Cout / 8;
+    std::vector<int32_t> nbr = build_neighbor_table(coords);
+    const S2CMap mp = build_s2c_map(coords);
+    const int P = (int)mp.parents.size();
+
+    static constexpr int64_t kDefaultChunkBytes = 256ll * 1024 * 1024;
+    static constexpr int64_t kMaxStreamVoxels = 65536;
+    int64_t budget = kDefaultChunkBytes;
+    if (const char* e = getenv("TRELLIS_C2S_CHUNK_MB")) {   // shared knob with the up-block
+        const int64_t mb = atoll(e);
+        if (mb > 0) budget = mb * 1024 * 1024;
+    }
+
+    // Voxel-local norm (+ optional affine) + SiLU, chunked; result keeps a zero sentinel column.
+    auto norm_silu = [&](const std::vector<float>& in, int C, int n, const char* affine) {
+        std::vector<float> out((size_t)C * (n + 1), 0.0f);
+        int64_t chunk = std::max<int64_t>(1, budget / std::max<int64_t>(1, 4ll * C * (int64_t)sizeof(float)));
+        chunk = std::min<int64_t>(chunk, n);
+        for (int64_t r0 = 0; r0 < n; r0 += chunk) {
+            const int nr = (int)std::min<int64_t>(chunk, n - r0);
+            GraphRun gr(m);
+            ggml_context* c = gr.c;
+            T* gf = ggml_new_tensor_2d(c, GGML_TYPE_F32, C, nr); ggml_set_input(gf);
+            T* h = ggml_norm(c, gf, 1e-6f);
+            if (affine) h = ggml_add(c, ggml_mul(c, h, m.get(prefix + "." + affine + ".weight")),
+                                     m.get(prefix + "." + affine + ".bias"));
+            h = ggml_silu(c, h);
+            std::vector<float> hv = gr.run(h, { {gf, in.data() + (size_t)C * r0} });
+            std::copy(hv.begin(), hv.end(), out.begin() + (size_t)C * r0);
+        }
+        return out;
+    };
+
+    // conv1 at the fine resolution: Cin -> K, chunked over fine voxels.
+    std::vector<float> hnorm = norm_silu(feats_in, Cin, N, "norm1");
+    std::vector<float> h1((size_t)K * N);
+    {
+        int64_t chunk = std::max<int64_t>(1, budget / std::max<int64_t>(1, 4ll * Cin * (int64_t)sizeof(float)));
+        chunk = std::min<int64_t>({chunk, kMaxStreamVoxels, (int64_t)N});
+        for (int64_t r0 = 0; r0 < N; r0 += chunk) {
+            const int nr = (int)std::min<int64_t>(chunk, N - r0);
+            S2CCompact cn = s2c_compact(nbr, N, r0, nr);
+            std::vector<float> local = s2c_gather_cols(hnorm, Cin, cn.globals);
+            GraphRun gr(m);
+            ggml_context* c = gr.c;
+            const int nsrc = (int)cn.globals.size();
+            T* gh = ggml_new_tensor_2d(c, GGML_TYPE_F32, Cin, nsrc + 1); ggml_set_input(gh);
+            T* gn = ggml_new_tensor_2d(c, GGML_TYPE_I32, nr, 27);         ggml_set_input(gn);
+            T* W1 = w32(c, m.get(prefix + ".conv1.weight"));
+            T* o = submconv_range(c, m, prefix + ".conv1", gh, W1, gn, nr, 0, nr);
+            std::vector<float> ov = gr.run(o, { {gh, local.data()}, {gn, cn.table.data()} });
+            std::copy(ov.begin(), ov.end(), h1.begin() + (size_t)K * r0);
+        }
+        hnorm.clear(); hnorm.shrink_to_fit();
+    }
+
+    // stack siblings -> [Cout,P], norm2 + SiLU (no affine), then conv2 on the parent grid.
+    std::vector<float> hs = s2c_stack(h1, K, mp);
+    h1.clear(); h1.shrink_to_fit();
+    std::vector<float> hn = norm_silu(hs, Cout, P, nullptr);
+    hs.clear(); hs.shrink_to_fit();
+    std::vector<float> skip = s2c_skip(feats_in, Cin, Cout, mp);
+    std::vector<int32_t> pnbr = build_neighbor_table(mp.parents);
+
+    std::vector<float> outv((size_t)Cout * P);
+    int64_t chunk2 = std::max<int64_t>(1, budget / std::max<int64_t>(1, 3ll * Cout * (int64_t)sizeof(float)));
+    chunk2 = std::min<int64_t>({chunk2, kMaxStreamVoxels, (int64_t)kMulMatRowChunk, (int64_t)P});
+    for (int64_t r0 = 0; r0 < P; r0 += chunk2) {
+        const int nr = (int)std::min<int64_t>(chunk2, P - r0);
+        S2CCompact cn = s2c_compact(pnbr, P, r0, nr);
+        std::vector<float> local = s2c_gather_cols(hn, Cout, cn.globals);
+        GraphRun gr(m);
+        ggml_context* c = gr.c;
+        const int nsrc = (int)cn.globals.size();
+        T* gh = ggml_new_tensor_2d(c, GGML_TYPE_F32, Cout, nsrc + 1); ggml_set_input(gh);
+        T* gn = ggml_new_tensor_2d(c, GGML_TYPE_I32, nr, 27);          ggml_set_input(gn);
+        T* W2 = w32(c, m.get(prefix + ".conv2.weight"));
+        T* o = submconv_range(c, m, prefix + ".conv2", gh, W2, gn, nr, 0, nr);
+        std::vector<float> ov = gr.run(o, { {gh, local.data()}, {gn, cn.table.data()} });
+        for (size_t j = 0; j < ov.size(); ++j) ov[j] += skip[(size_t)Cout * r0 + j];
+        std::copy(ov.begin(), ov.end(), outv.begin() + (size_t)Cout * r0);
+    }
+    return { std::move(outv), mp.parents, Cout };
 }
 
 } // namespace trellis

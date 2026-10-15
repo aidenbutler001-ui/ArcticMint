@@ -366,6 +366,11 @@ add_executable(trellis-test-tex-enc src/test_tex_enc.cpp)
 target_link_libraries(trellis-test-tex-enc PRIVATE trellis_core)
 set_target_properties(trellis-test-tex-enc PROPERTIES BUILD_RPATH "${GGML_RPATH}")
 
+# picture-colour start latent for the texture flow (opt-in): dump voxel coords, encode projected colours
+add_executable(trellis-tex-start src/tex_start.cpp)
+target_link_libraries(trellis-tex-start PRIVATE trellis_core)
+set_target_properties(trellis-tex-start PROPERTIES BUILD_RPATH "${GGML_RPATH}")
+
 add_executable(trellis-decode-replay src/decode_replay.cpp)
 target_link_libraries(trellis-decode-replay PRIVATE trellis_core)
 set_target_properties(trellis-decode-replay PROPERTIES BUILD_RPATH "${GGML_RPATH}")

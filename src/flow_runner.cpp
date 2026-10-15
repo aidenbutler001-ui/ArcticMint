@@ -218,7 +218,15 @@ std::vector<float> sample_flow(const FlowFwd& fwd, std::vector<float> sample,
         fflush(stdout);
     };
     progress(0);
-    for (int i = 0; i < sp.steps; ++i) {
+    int i_first = 0;
+    if (sp.x0_start) {
+        if (sp.x0_start->size() != Nst) throw std::runtime_error("sample_flow: x0_start size mismatch");
+        while (i_first < sp.steps - 1 && ts[i_first] > sp.t_start + 1e-6f) ++i_first;
+        const float a = 1 - sm, b = sm + (1 - sm) * ts[i_first];
+        for (size_t k = 0; k < Nst; ++k) sample[k] = a * (*sp.x0_start)[k] + b * sample[k];
+        printf("      [flow] SDEdit start: skipping %d of %d steps, first t=%.3f\n", i_first, sp.steps, ts[i_first]);
+    }
+    for (int i = i_first; i < sp.steps; ++i) {
         const float t = ts[i], tprev = ts[i + 1];
         const float gs = (sp.gi0 <= t && t <= sp.gi1) ? sp.guidance_strength : 1.0f;
         const float tscaled = 1000.0f * t;

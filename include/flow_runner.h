@@ -25,6 +25,12 @@ struct SamplerParams {
     float gi1               = 1.0f;
     float rescale_t         = 1.0f;
     float sigma_min         = 1e-5f;
+    // Opt-in SDEdit-style start (texture colour from the picture). With x0_start set, the
+    // sampler skips every step whose t is above t_start, blends x0_start into the passed noise
+    // at the first remaining step's t (x = (1-sm)*x0 + (sm+(1-sm)*t)*noise, the sampler's own
+    // forward process) and runs the rest. nullptr = the normal full run, unchanged.
+    const std::vector<float>* x0_start = nullptr;
+    float t_start           = 0.7f;
 };
 
 // One branch of the classifier-free guidance pair. `cond` is the cross-attention context that

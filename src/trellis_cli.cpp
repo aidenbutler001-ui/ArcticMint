@@ -680,6 +680,18 @@ int trellis_run(const trellis::TrellisParams& cfg) {
                 return v;
             };
             trellis::SamplerParams sp; sp.steps=(cfg.steps>0?cfg.steps:12); sp.guidance_strength=1.0f; sp.guidance_rescale=0.0f; sp.gi0=0.6f; sp.gi1=0.9f; sp.rescale_t=3.0f;
+            // Opt-in picture-colour start (TRELLIS_TEX_START=<normalised f32 [tN,32] in this run's token order, from
+            // trellis-tex-start>, TRELLIS_TEX_T0=<flow time, default 0.7>). Noise is still drawn so seeds stay comparable.
+            vector<float> tex_x0;
+            if (const char* sf = std::getenv("TRELLIS_TEX_START")) {
+                tex_x0.resize((size_t)32 * tN);
+                FILE* xf = fopen(sf, "rb");
+                if (xf && fread(tex_x0.data(), 4, tex_x0.size(), xf) == tex_x0.size()) {
+                    sp.x0_start = &tex_x0;
+                    if (const char* t0 = std::getenv("TRELLIS_TEX_T0")) sp.t_start = (float)atof(t0);
+                } else { fprintf(stderr, "      [tex-start] cannot read %d*32 floats from %s; running normally\n", tN, sf); }
+                if (xf) fclose(xf);
+            }
             texlat = trellis::sample_flow(fwd, noise((size_t)32*tN),
                          trellis::FlowCond(tcond, pix ? pc.proj.data()     : nullptr),
                          trellis::FlowCond(tneg,  nullptr), sp);  // [32,tN]

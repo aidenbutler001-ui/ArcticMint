@@ -9,6 +9,7 @@
 #include <algorithm>
 #include <array>
 #include <cstdint>
+#include <cstdlib>
 #include <unordered_map>
 #include <vector>
 
@@ -22,6 +23,20 @@ struct S2CMap {
 
 inline uint64_t s2c_key(int x, int y, int z) {
     return ((uint64_t)(uint32_t)x << 40) | ((uint64_t)(uint32_t)y << 20) | (uint32_t)z;
+}
+
+// Test hook: TRELLIS_S2C_PERM="zyx"-style string (a permutation of x,y,z listing the axis that
+// supplies bit 0, bit 1, bit 2 of the octant index). Default "xyz" = the convention above.
+inline const int* s2c_axis_perm() {
+    static int perm[3] = {0, 1, 2};
+    static bool init = false;
+    if (!init) {
+        init = true;
+        if (const char* e = std::getenv("TRELLIS_S2C_PERM")) {
+            if (e[0] && e[1] && e[2]) for (int i = 0; i < 3; ++i) perm[i] = e[i] == 'x' ? 0 : e[i] == 'y' ? 1 : 2;
+        }
+    }
+    return perm;
 }
 
 inline S2CMap build_s2c_map(const std::vector<std::array<int,3>>& coords) {
@@ -44,7 +59,8 @@ inline S2CMap build_s2c_map(const std::vector<std::array<int,3>>& coords) {
     r.child_oct.resize(N);
     for (size_t i = 0; i < N; ++i) {
         r.child_parent[i] = row[keys[i]];
-        r.child_oct[i] = (uint8_t)((coords[i][0] & 1) | ((coords[i][1] & 1) << 1) | ((coords[i][2] & 1) << 2));
+        const int* pm = s2c_axis_perm();
+        r.child_oct[i] = (uint8_t)((coords[i][pm[0]] & 1) | ((coords[i][pm[1]] & 1) << 1) | ((coords[i][pm[2]] & 1) << 2));
     }
     return r;
 }

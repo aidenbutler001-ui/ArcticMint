@@ -525,7 +525,8 @@ int trellis_run(const trellis::TrellisParams& cfg) {
         slat_dn[(size_t)c + 32*n] = slat_norm[(size_t)c + 32*n]*SHAPE_STD[c] + SHAPE_MEAN[c];
     slat_stats(cascade ? "HR slat" : "slat (res32)", slat_dn);
     if (cascade && cfg.dump_slat) {   // dump HR slat for the reference-decoder diff
-        FILE* f = fopen("/tmp/hr_slat.bin", "wb");
+        const char* slat_path = std::getenv("TRELLIS_DUMP_SLAT_PATH");   // default /tmp/hr_slat.bin
+        FILE* f = fopen(slat_path ? slat_path : "/tmp/hr_slat.bin", "wb");
         if (f) {
             int n = N, res = RES; fwrite(&n, 4, 1, f); fwrite(&res, 4, 1, f);
             for (auto& c : shc) { int xyz[3] = { c[0], c[1], c[2] }; fwrite(xyz, 4, 3, f); }

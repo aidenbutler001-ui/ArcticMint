@@ -205,6 +205,15 @@ def convert_naf(w, src):
         raise ValueError("naf: no image_encoder.* tensors found — is this a NAF checkpoint?")
     return n_f16, n_f32, total
 
+# Multi-view Pixal3D (ckpts/*_bf16_mv.*): same tensor shapes as the single-view flows (checked against
+# the HF headers), separate fine-tuned weights. PIXAL3D_MV=1 with TRELLIS_FAMILY=pixal3d converts only
+# the four flows from the `_mv` files and writes them as `pixal3d_mv_*.gguf` next to the single-view set.
+MV = os.environ.get("PIXAL3D_MV") == "1" and FAMILY == "pixal3d"
+if MV:
+    PIXAL3D_MANIFEST = {k: ((v[0].replace("_bf16.", "_bf16_mv."), v[1].replace("_bf16.", "_bf16_mv."), v[2]) if k.endswith(("flow_512", "flow_1024", "ss_flow")) else v)
+                        for k, v in PIXAL3D_MANIFEST.items() if k.endswith(("flow_512", "flow_1024", "ss_flow"))}
+    PIXAL3D_MANIFEST.pop("tex_flow_512", None)
+    MANIFEST = PIXAL3D_MANIFEST
 
 # Components that are byte-identical between the two families and therefore keep their plain
 # name, so one model directory can serve both. Everything else gets a `pixal3d_` prefix.
@@ -213,7 +222,7 @@ SHARED = {"shape_dec", "tex_dec", "ss_dec", "dinov3", "birefnet"}
 
 def out_name(component):
     if FAMILY == "pixal3d" and component not in SHARED:
-        return f"pixal3d_{component}.gguf"
+        return f"pixal3d_mv_{component}.gguf" if MV else f"pixal3d_{component}.gguf"
     return f"{component}.gguf"
 
 

@@ -199,6 +199,13 @@ int trellis_run(const trellis::TrellisParams& cfg) {
     // and keep their plain names, so adding Pixal3D to an existing TRELLIS.2 set is 5 new files
     // rather than a second copy of everything.
     const std::string FP = pix ? "/pixal3d_" : "/";
+    const bool mv = pix && !cfg.views.empty();
+    if (!cfg.views.empty() && !pix) { fprintf(stderr, "[trellis] --views needs --model pixal3d
+"); return 1; }
+    if (cfg.view_azim.size() != cfg.views.size()) { fprintf(stderr, "[trellis] --views and --view-azim need the same number of entries
+"); return 1; }
+    // multi-view flows are separate fine-tunes (same shapes); decoders, DINOv3, BiRefNet and NAF are shared
+    const std::string FPF = mv ? "/pixal3d_mv_" : FP;
     trellis::CameraParams cam;
     if (pix) {
         constexpr float PIXAL3D_DEFAULT_FOV = 0.8575560450553894f;   // radians (~49.13 deg)
@@ -295,6 +302,43 @@ int trellis_run(const trellis::TrellisParams& cfg) {
     vector<float> cond1024;
     if (cascade)
         cond1024 = pix ? vector<float>(dino1024.begin(), dino1024.begin() + N_GLOBAL_FLOAT) : dino1024;
+    // Multi-view: every extra picture goes through the same matte / DINOv3 path; its projection is averaged into each
+    // stage's proj cond (build_proj) and its global tokens into the cross-attention context (upstream's "average" fusion).
+    struct ExtraView { vector<float> dino, dino1024, guide, guide1024; float azim = 0; };
+    vector<ExtraView> extra;
+    if (mv) {
+        for (size_t vi = 0; vi < cfg.views.size(); ++vi) {
+            printf("[2/6] extra view %zu: %s (azimuth %.1f deg)
+", vi + 1, cfg.views[vi].c_str(), cfg.view_azim[vi]);
+            ExtraView ev; ev.azim = cfg.view_azim[vi] * 3.14159265358979f / 180.0f;
+            std::vector<unsigned char> vcut; int vsz = 0;
+            if (birefnet) {
+                trellis::Model bm = trellis::Model::load(M + "/birefnet.gguf", gpu);
+                vcut = trellis::birefnet_cutout(cfg.views[vi], bm, gpu < 0 ? 0 : gpu, vsz);
+                bm.free();
+            } else vcut = trellis::threshold_cutout(cfg.views[vi], vsz);
+            if (vcut.empty()) { fprintf(stderr, "[trellis] cannot read view %s
+", cfg.views[vi].c_str()); return 1; }
+            vector<float> vchw = trellis::normalize_cutout(vcut, vsz, 512), vchw1024;
+            if (cascade) vchw1024 = trellis::normalize_cutout(vcut, vsz, 1024);
+            if (cfg.naf) {
+                ev.guide = trellis::cutout_to_chw01(vcut, vsz, 512);
+                if (cascade) ev.guide1024 = trellis::cutout_to_chw01(vcut, vsz, 1024);
+            }
+            { trellis::Model m = trellis::Model::load(M + "/dinov3.gguf", gpu);
+              ev.dino = trellis::dinov3_encode(m, vchw, 512);
+              if (cascade) ev.dino1024 = trellis::dinov3_encode(m, vchw1024, 1024);
+              m.free(); }
+            extra.push_back(std::move(ev));
+        }
+        const float nv = 1.0f + (float)extra.size();
+        for (size_t i = 0; i < N_GLOBAL_FLOAT; ++i) {
+            float a = cond[i]; for (auto& e : extra) a += e.dino[i]; cond[i] = a / nv;
+            if (cascade) { float b = cond1024[i]; for (auto& e : extra) b += e.dino1024[i]; cond1024[i] = b / nv; }
+        }
+        printf("      multi-view: %zu views, global tokens averaged
+", extra.size() + 1);
+    }
     const int Lc = (int)(cond.size() / 1024);
     vector<float> neg(cond.size(), 0.0f);
     const int Lc1024 = cascade ? (int)(cond1024.size() / 1024) : 0;
@@ -331,6 +375,21 @@ int trellis_run(const trellis::TrellisParams& cfg) {
         } else {
             pc = trellis::pixal3d_proj_cond(dn, S, grid_res, proj_ch, cam, cds, nullptr, nullptr, naf_out);
         }
+        for (const ExtraView& ev : extra) {
+            trellis::CameraParams cv = cam; cv.azimuth = ev.azim;
+            const vector<float>& dv = (S == 1024) ? ev.dino1024 : ev.dino;
+            const vector<float>& gv = (S == 1024) ? ev.guide1024 : ev.guide;
+            trellis::ProjCond pv;
+            if (want_naf) {
+                trellis::Model nm = trellis::Model::load(M + FP + "naf.gguf", gpu);
+                pv = trellis::pixal3d_proj_cond(dv, S, grid_res, proj_ch, cv, cds, &nm, &gv, naf_out);
+                nm.free();
+            } else {
+                pv = trellis::pixal3d_proj_cond(dv, S, grid_res, proj_ch, cv, cds, nullptr, nullptr, naf_out);
+            }
+            for (size_t i = 0; i < pc.proj.size(); ++i) pc.proj[i] += pv.proj[i];   // in place: one extra view resident at a time
+        }
+        if (!extra.empty()) { const float inv = 1.0f / (1.0f + (float)extra.size()); for (float& x : pc.proj) x *= inv; }
         printf("      proj cond: grid %d^3, image %d, %d ch%s\n", grid_res, S, proj_ch,
                proj_ch == 2048 ? (want_naf ? ", NAF upsampled" : ", NAF DISABLED") : "");
         return pc;
@@ -346,7 +405,7 @@ int trellis_run(const trellis::TrellisParams& cfg) {
     for (int ss_i = 0; ss_i < ss_n; ++ss_i)
     {
         if (cfg.ss_only) rng.seed(run_seed + (uint32_t)ss_i);
-        trellis::Model m = trellis::Model::load(M + FP + "ss_flow.gguf", gpu);
+        trellis::Model m = trellis::Model::load(M + FPF + "ss_flow.gguf", gpu);
         trellis::DiTParams p; p.in_ch = 8; p.out_ch = 8; p.d_cond = 1024; p.cast_f32 = F32;
         p.proj_ch = proj_ch_of(m); p.proj_mode = p.proj_ch > 0;
         // The sparse-structure DiT is dense at 16^3, and Pixal3D's SS stage projects a 16^3 grid,
@@ -401,7 +460,7 @@ int trellis_run(const trellis::TrellisParams& cfg) {
     // Pixal3D publishes a single (1024) texture flow, where TRELLIS.2 publishes both. The light
     // --res 512 path has no texture model to run at all, so it degrades to geometry only.
     if (do_tex && pix && !cascade) {
-        FILE* tf = fopen((M + FP + "tex_flow_512.gguf").c_str(), "rb");
+        FILE* tf = fopen((M + FPF + "tex_flow_512.gguf").c_str(), "rb");
         if (tf) fclose(tf);
         else { printf("      (pixal3d ships no res-512 texture flow -- writing geometry only)\n"); do_tex = false; }
     }
@@ -451,7 +510,7 @@ int trellis_run(const trellis::TrellisParams& cfg) {
         const int max_tok   = cfg.max_tokens;
         printf("[4/7] shape SLAT flow (LR 512 -> upsample -> HR %d cascade, max_tok=%d)\n", hr_target, max_tok);
         // (1) LR shape flow @res32 with cond_512
-        lr_norm = shape_flow(M + FP + "shape_flow_512.gguf", coords, cond.data(), neg.data(), Lc,
+        lr_norm = shape_flow(M + FPF + "shape_flow_512.gguf", coords, cond.data(), neg.data(), Lc,
                              /*grid_res=*/32, /*S=*/512, /*naf_out=*/512);
         lr_dn.resize(lr_norm.size());
         for (size_t n = 0; n < coords.size(); ++n) for (int c = 0; c < 32; ++c)
@@ -509,13 +568,13 @@ int trellis_run(const trellis::TrellisParams& cfg) {
             printf("      [stats] proj: DINOv3@1024 vs @512 agreement on the same points = %.3f\n",
                    trellis::pixal3d_cross_res_agreement(dino1024, 1024, dino, 512,
                                                         hr_res / 16, cam, shc));
-        slat_norm = shape_flow(M + FP + "shape_flow_1024.gguf", shc, cond1024.data(), neg1024.data(), Lc1024,
+        slat_norm = shape_flow(M + FPF + "shape_flow_1024.gguf", shc, cond1024.data(), neg1024.data(), Lc1024,
                                /*grid_res=*/hr_res / 16, /*S=*/1024, /*naf_out=*/512);
         RES = hr_res; cond_dec = cond1024.data(); neg_dec = neg1024.data(); Lc_dec = Lc1024;
     } else {
         printf("[4/7] shape SLAT flow (512)\n");
         shc = coords;
-        slat_norm = shape_flow(M + FP + "shape_flow_512.gguf", coords, cond.data(), neg.data(), Lc,
+        slat_norm = shape_flow(M + FPF + "shape_flow_512.gguf", coords, cond.data(), neg.data(), Lc,
                                /*grid_res=*/32, /*S=*/512, /*naf_out=*/512);
     }
     const int N = (int)shc.size();
@@ -606,7 +665,7 @@ int trellis_run(const trellis::TrellisParams& cfg) {
             fflush(stdout);
         }
         auto decode_texture = [&](bool use_mixed) {
-            const std::string tflow = M + FP + (use_mixed ? "tex_flow_512.gguf" : (cascade ? "tex_flow_1024.gguf" : "tex_flow_512.gguf"));
+            const std::string tflow = M + FPF + (use_mixed ? "tex_flow_512.gguf" : (cascade ? "tex_flow_1024.gguf" : "tex_flow_512.gguf"));
             const vector<std::array<int,3>>& tcoords = use_mixed ? coords : shc;
             const vector<float>& tslat = use_mixed ? lr_norm : slat_norm;
             const float* tcond = use_mixed ? cond.data() : cond_dec;

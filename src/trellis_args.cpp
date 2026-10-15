@@ -90,6 +90,16 @@ void print_usage(const char* argv0, bool server) {
         "                          pixels of a 512 frame (default 0). Rarely useful: background\n"
         "                          removal already reframes around the subject, and extending\n"
         "                          past the cutout projects onto pixels that do not exist.\n"
+        "      --views A.png,B.png pixal3d multi-view: extra pictures of the same object after the
+"
+        "      --view-azim 180,90  main one, and each one's camera azimuth in degrees (0 = main camera,
+"
+        "                          counter-clockwise from above; 180 = the back). Needs the
+"
+        "                          pixal3d_mv_*.gguf flow weights. Each view is matted and cropped on
+"
+        "                          its own, so the same --fov applies to all.
+"
         "      --no-naf            pixal3d: skip NAF guided upsampling (needs no naf.gguf, but\n"
         "                          the shape/texture stages then lose their high-frequency\n"
         "                          projection branch)\n"
@@ -215,6 +225,22 @@ bool parse_args(int argc, char** argv, TrellisParams& p) {
             }
         }
         else if (a == "--no-naf")               { p.naf = false; }
+        else if (a == "--views" || a == "--view-azim") {
+            const char* v = need(a.c_str()); if (!v) return false;
+            std::string s(v); size_t i = 0;
+            while (i <= s.size()) {
+                size_t j = s.find(',', i); if (j == std::string::npos) j = s.size();
+                std::string t = s.substr(i, j - i);
+                if (a == "--views") p.views.push_back(t);
+                else {
+                    char* e = nullptr; const float d = std::strtof(t.c_str(), &e);
+                    if (t.empty() || *e || !std::isfinite(d)) { fprintf(stderr, "[trellis] --view-azim wants comma-separated degrees
+"); return false; }
+                    p.view_azim.push_back(d);
+                }
+                i = j + 1;
+            }
+        }
         else if (a == "--gpu")                  { const char* v = need(a.c_str()); if (!v) return false; p.gpu = atoi(v); }
         else if (a == "--backend")              { const char* v = need(a.c_str()); if (!v) return false; p.backend = v; }
         else if (a == "-t" || a == "--threads") { const char* v = need(a.c_str()); if (!v) return false; p.threads = atoi(v); }

@@ -1,6 +1,7 @@
 #pragma once
 #include <cstdint>
 #include <string>
+#include <vector>
 
 namespace trellis {
 
@@ -58,6 +59,12 @@ struct TrellisParams {
     // branch). Off falls back to sampling the bare feature map twice, which halves the effective
     // proj input — accepted only as a way to run without naf.gguf.
     bool naf = true;
+    // Multi-view (pixal3d only). `views` lists EXTRA pictures after the main one; `view_azim` is
+    // each one's camera azimuth in degrees around the object's up axis, counter-clockwise seen
+    // from above, 0 = the main view's camera (Pixal3D's transforms.json convention: azim 90 puts
+    // the camera at world +x when the main camera is at -y). Needs the pixal3d_mv_* flow weights.
+    std::vector<std::string> views;
+    std::vector<float> view_azim;
 
     bool cascade    = true;     // 1024 cascade (default); --res 512 selects the light path
     int  hr_res     = 1024;     // HR cascade target resolution (1024 / 1536)

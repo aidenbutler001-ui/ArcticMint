@@ -20,6 +20,7 @@ struct CameraParams {
     float camera_angle_x = 0.8575560450553894f;   // horizontal FOV in radians
     float distance       = 2.0f;                  // camera distance along the frontal axis
     float mesh_scale     = 1.0f;
+    float azimuth        = 0.0f;                  // multi-view: this camera's orbit angle (radians, CCW from above) around world Z; 0 = the frontal camera
 };
 
 // The reference derives `distance` in closed form from the FOV by requiring the grid corner at

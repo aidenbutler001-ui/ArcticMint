@@ -51,7 +51,13 @@ void pixal3d_project_cell(int R, int cx, int cy, int cz, const CameraParams& cam
     // by mesh_scale; the frontal view matrix then reduces the world->camera transform to
     // x_cam = wx, y_cam = wz, z_cam = -wy - distance.
     const float s = 1.0f / (2.0f * cam.mesh_scale);
-    const float wx = gx * s, wy = -gz * s, wz = gy * s;
+    float wx = gx * s, wy = -gz * s;
+    const float wz = gy * s;
+    if (cam.azimuth != 0.0f) {          // a camera orbited by +a sees the grid rotated by -a about world Z
+        const float ca = std::cos(cam.azimuth), sa = std::sin(cam.azimuth);
+        const float rx = wx * ca + wy * sa, ry = -wx * sa + wy * ca;
+        wx = rx; wy = ry;
+    }
     const float depth = wy + cam.distance;
     const float f_px  = focal_pixels(cam.camera_angle_x, image_resolution);
     const float inv   = 1.0f / (depth + 1e-8f);

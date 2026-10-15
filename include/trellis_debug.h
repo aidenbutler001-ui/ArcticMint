@@ -24,6 +24,14 @@ private:
     std::chrono::steady_clock::time_point          t0_;
 };
 
+// Opt-in per-stage wall-clock breakdown (--stage-timing / TRELLIS_STAGE_TIMING=1).
+// stage_mark("x") closes the stage in progress and starts "x"; stage_report() closes the
+// last stage and prints a table. Both are no-ops (nothing printed) when disabled.
+bool stage_timing();
+void set_stage_timing(bool on);
+void stage_mark(const char* name);
+void stage_report();
+
 // Instrumented graph execution for a single backend or scheduler.
 ggml_status compute_graph(ggml_backend_t backend, ggml_cgraph* graph, const char* label);
 ggml_status compute_graph_sched(ggml_backend_sched_t sched, ggml_cgraph* graph, const char* label);

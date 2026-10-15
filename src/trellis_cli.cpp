@@ -173,6 +173,7 @@ int trellis_run(const trellis::TrellisParams& cfg) {
     trellis::g_cpu_threads = cfg.threads;
     trellis::g_backend = cfg.backend;
     trellis::set_verbose(cfg.verbose);
+    trellis::set_stage_timing(cfg.stage_timing);
     trellis::set_sched_mode(cfg.sched);
     trellis::set_vulkan_fallback_mode(cfg.vulkan_fallback);
     if (!cfg.no_fa) {
@@ -217,6 +218,7 @@ int trellis_run(const trellis::TrellisParams& cfg) {
     std::mt19937 rng(run_seed); std::normal_distribution<float> randn(0.f, 1.f);
     auto noise = [&](size_t n){ vector<float> v(n); for (auto& x : v) x = randn(rng); return v; };
     double t0 = now();
+    trellis::stage_mark("preprocess");
 
     bool birefnet = cfg.birefnet == 1;
     if (cfg.birefnet < 0) {
@@ -270,7 +272,7 @@ int trellis_run(const trellis::TrellisParams& cfg) {
             printf("      bg-removal cutout -> %s\n", cut_png.c_str());
         else
             fprintf(stderr, "      [warn] could not write bg-removal cutout to %s\n", cut_png.c_str());
-        if (cfg.bg_only) { printf("[bg-only] done (%.1fs)\n", now() - t0); return 0; }
+        if (cfg.bg_only) { trellis::stage_report(); printf("[bg-only] done (%.1fs)\n", now() - t0); return 0; }
     }
 
     // Raw [0,1] guides for NAF. The DINOv3 branch wants the ImageNet-normalized tensor; NAF's
@@ -281,6 +283,7 @@ int trellis_run(const trellis::TrellisParams& cfg) {
         if (cascade) guide1024 = trellis::cutout_to_chw01(cutout, cut_sz, 1024);
     }
 
+    trellis::stage_mark("dino_conditioning");
     printf("[2/6] DINOv3 conditioning\n");
     vector<float> dino, dino1024;       // full token stream: 5 global + (S/16)^2 patches
     { trellis::Model m = trellis::Model::load(M + "/dinov3.gguf", gpu);
@@ -336,6 +339,7 @@ int trellis_run(const trellis::TrellisParams& cfg) {
         return pc;
     };
 
+    trellis::stage_mark("structure_flow_decode");
     printf("[3/6] sparse-structure flow + decode\n");
     vector<std::array<int,3>> coords;
     // --ss-only --ss-seeds N repeats this stage for seeds run_seed .. run_seed+N-1 and stops after it. Re-seeding rng
@@ -390,6 +394,7 @@ int trellis_run(const trellis::TrellisParams& cfg) {
             return 1;
         }
         fclose(sf);
+        trellis::stage_report();
         printf("[ss-only] %zu seed(s) -> %s (%.1fs)\n", ss_runs.size(), ss_path.c_str(), now() - t0);
         return 0;
     }
@@ -429,6 +434,7 @@ int trellis_run(const trellis::TrellisParams& cfg) {
         return sn;
     };
 
+    trellis::stage_mark("shape_flow");
     vector<float> slat_norm, slat_dn;        // normalized (for tex concat) and denormalized (for decode)
     vector<std::array<int,3>> shc;           // coords where the shape SLAT lives + is decoded
     int RES = 512;                           // final grid resolution
@@ -533,6 +539,7 @@ int trellis_run(const trellis::TrellisParams& cfg) {
         }
     }
 
+    trellis::stage_mark("shape_decode");
     printf("[5/7] FlexiDualGrid shape decode -> mesh @res%d\n", RES);
     trellis::Mesh mesh;
     trellis::ShapeOut so;
@@ -552,6 +559,7 @@ int trellis_run(const trellis::TrellisParams& cfg) {
             fflush(stdout);
         }
     }
+    trellis::stage_mark("fill_holes");
     printf("      mesh V=%d F=%d\n", mesh.V(), mesh.F());
     {   // reference postprocess fills small holes BEFORE the remesh (max_hole_perimeter=3e-2):
         // open cracks make the narrow-band in/out test ambiguous and leak holes into the
@@ -588,6 +596,7 @@ int trellis_run(const trellis::TrellisParams& cfg) {
             fprintf(stderr, "[trellis] dual PBR requires TRELLIS.2 with 1024 geometry and 512 primary PBR\n");
             return 1;
         }
+        trellis::stage_mark("texture_flow_decode");
         printf("[6/7] texture SLAT flow + PBR decode%s\n", mixed ? "  (res-512 texture on res-1024 mesh)" : "");
 
         if (mixed) {   // decode a res-512 shape (from the LR slat) to guide the res-512 tex decode
@@ -761,6 +770,7 @@ int trellis_run(const trellis::TrellisParams& cfg) {
         // Binary layout matches the TRELLIS_DUMP_POST debug env:
         // i32 V,F,Mv,res; f32 verts[V*3]; i32 faces[F*3]; i32 coords[Mv*3];
         // f32 pbr6[Mv*6] (base_color.rgb, metallic, roughness, alpha in [0,1]).
+        trellis::stage_mark("dump_post_cleanup");
         trellis::weld_vertices(mesh.verts, mesh.faces, nullptr,
                                1.0f / ((float)so.res * 8.0f));
         trellis::fill_small_holes(mesh.faces);
@@ -791,10 +801,12 @@ int trellis_run(const trellis::TrellisParams& cfg) {
         printf("[7/7] cleaned dump -> %s (V=%d F=%d%s, PBR=%d @res%d)\n",
                cfg.dump_post.c_str(), dV, dFc,
                rm.F() > 0 ? " remeshed" : " raw (remesh empty)", Mv, res);
+        trellis::stage_report();
         printf("done in %.1fs -> %s\n", now() - t0, cfg.dump_post.c_str());
         return 0;
     }
 
+    trellis::stage_mark("post_setup");
     printf("[7/7] write %s\n", outglb.c_str());
     bool textured = false;
     if (!pbr6.empty()) {   // UV-baked textured GLB (PBR material)
@@ -861,7 +873,8 @@ int trellis_run(const trellis::TrellisParams& cfg) {
             }
             printf("      [dump] secondary PBR on the same geometry -> %s\n", dual_pbr_path);
         }
-        if (std::getenv("TRELLIS_STOP_AFTER_POST_DUMP")) return 0;
+        if (std::getenv("TRELLIS_STOP_AFTER_POST_DUMP")) { trellis::stage_report(); return 0; }
+        if (cfg.retopo) trellis::stage_mark("retopo_driver");
         if (cfg.retopo) {
 #if defined(__linux__) || defined(_WIN32)
             const fs::path quad_glb=retopo_run/"model.glb";
@@ -957,11 +970,13 @@ int trellis_run(const trellis::TrellisParams& cfg) {
                 fs::remove(staged);
                 return 1;
             }
+            trellis::stage_report();
             printf("done in %.1fs -> %s (quad audit: %s)\n",now()-t0,
                    outglb.c_str(),(retopo_run/"model.retopo-accepted.json").string().c_str());
             return 0;
 #endif
         }
+        trellis::stage_mark("weld_bvh");
         trellis::weld_vertices(mesh.verts, mesh.faces, colors.empty() ? nullptr : &colors,
                                1.0f / ((float)so.res * 8.0f));
         trellis::post::hash_report("weld", mesh.verts, mesh.faces);
@@ -979,6 +994,7 @@ int trellis_run(const trellis::TrellisParams& cfg) {
         // so the noise survives as the issue-#22 speckle. Default band (cfg.band==0)
         // scales with resolution to keep the offset resolution-independent (512->1,
         // 1024->2, 1536->3); an explicit --band / per-request band forces that value.
+        trellis::stage_mark("remesh");
         int remesh_band = cfg.band > 0 ? cfg.band : std::max(1, so.res / 512);
         trellis::Mesh rm = trellis::remesh_narrow_band_dc(mesh.verts.data(), mesh.V(),
                                                           mesh.faces.data(), mesh.F(),
@@ -990,6 +1006,7 @@ int trellis_run(const trellis::TrellisParams& cfg) {
         // 50+ pieces). The faithful QEM simplifier below handles surface smoothing via its
         // quadric + skinny-triangle cost, so no Taubin pre-pass is needed (and none is applied,
         // which keeps the mesh aligned to the voxel PBR volume for correct texture sampling).
+        trellis::stage_mark("remesh_cleanup");
         if (rm.F() > 0) {
             trellis::clean_mesh(rm.V(), rm.faces);
             trellis::post::hash_report("clean_mesh", rm.verts, rm.faces);
@@ -1002,6 +1019,7 @@ int trellis_run(const trellis::TrellisParams& cfg) {
         }
         const std::vector<float>& sverts = rm.F() > 0 ? rm.verts : mesh.verts;
         const std::vector<int32_t>& sfaces = rm.F() > 0 ? rm.faces : mesh.faces;
+        trellis::stage_mark("simplify");
         std::vector<float> dv, dp; std::vector<int32_t> df;
         if (cfg.decim > 0) {
             trellis::decimate_cluster(sverts, (int)sverts.size()/3, sfaces, (int)sfaces.size()/3, {}, cfg.decim, dv, df, dp);
@@ -1057,6 +1075,7 @@ int trellis_run(const trellis::TrellisParams& cfg) {
                    flipped.collision_rejections+smoothed.collision_rejections,
                    smoothed.maximum_displacement);
         }
+        trellis::stage_mark("uv_atlas_bake");
         const int dV = (int)dv.size()/3, dF = (int)df.size()/3;
         // Texels are shaded straight from the per-voxel PBR volume (trilinear sampling, the
         // reference bake behavior) rather than from decimation-averaged vertex colors, so
@@ -1066,6 +1085,7 @@ int trellis_run(const trellis::TrellisParams& cfg) {
         trellis::BakedMesh bm = boxuv ? trellis::uv_box_project(dv, dV, df, dF, no_vp, T, &vox)
                                       : trellis::uv_bake(dv, dV, df, dF, no_vp, T, &vox);
         if (!boxuv && !bm.ok()) bm = trellis::uv_chart_project(dv, dV, df, dF, no_vp, T, &vox);
+        trellis::stage_mark("write_glb");
         if (bm.ok()) {
             trellis::write_glb_textured(outglb.c_str(), bm.verts.data(), (int64_t)bm.verts.size()/3, bm.uv.data(),
                                         bm.faces.data(), (int64_t)bm.faces.size()/3, bm.base.data(), bm.mr.data(), bm.T,
@@ -1082,12 +1102,15 @@ int trellis_run(const trellis::TrellisParams& cfg) {
         fprintf(stderr,"[trellis] textured POST unavailable for retopo\n");
         return 1;
     }
+    if (!textured) trellis::stage_mark("write_glb");
     if (!textured)
         trellis::write_glb(outglb.c_str(), mesh.verts.data(), mesh.V(), mesh.faces.data(), mesh.F(),
                            colors.empty() ? nullptr : colors.data(), run_seed,
                            cfg.copyright.empty() ? nullptr : cfg.copyright.c_str());
+    trellis::stage_mark("write_ply");
     std::string ply = outglb.substr(0, outglb.find_last_of('.')) + ".ply";
     trellis::write_ply(ply.c_str(), mesh.verts.data(), mesh.V(), mesh.faces.data(), mesh.F(), colors.empty() ? nullptr : colors.data());
+    trellis::stage_report();
     printf("done in %.1fs -> %s (+ %s)\n", now() - t0, outglb.c_str(), ply.c_str());
     return 0;
 }

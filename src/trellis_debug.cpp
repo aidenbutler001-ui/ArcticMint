@@ -6,7 +6,10 @@
 #include <cstdlib>
 #include <map>
 #include <mutex>
+#include <string>
 #include <thread>
+#include <utility>
+#include <vector>
 
 namespace trellis {
 
@@ -25,6 +28,57 @@ bool verbose() {
 void set_verbose(bool v) {
     if (v) { if (g_verbose < 1) g_verbose = 1; }
     else   { if (g_verbose < 0) g_verbose = 0; }
+}
+
+namespace {
+int g_stage_timing = -1;      // -1 = not yet resolved from the environment
+std::vector<std::pair<std::string, double>> g_stages;   // name, seconds
+std::string g_stage_name;
+std::chrono::steady_clock::time_point g_stage_t0, g_stage_start;
+}  // namespace
+
+bool stage_timing() {
+    if (g_stage_timing < 0) {
+        const char* e = std::getenv("TRELLIS_STAGE_TIMING");
+        g_stage_timing = (e && atoi(e) > 0) ? 1 : 0;
+    }
+    return g_stage_timing > 0;
+}
+
+void set_stage_timing(bool on) {
+    if (on) g_stage_timing = 1;
+    g_stages.clear();   // a long-lived server must not carry rows over from an earlier run
+    g_stage_name.clear();
+}
+
+static void stage_close(std::chrono::steady_clock::time_point now) {
+    if (!g_stage_name.empty())
+        g_stages.emplace_back(g_stage_name, std::chrono::duration<double>(now - g_stage_t0).count());
+    g_stage_name.clear();
+}
+
+void stage_mark(const char* name) {
+    if (!stage_timing()) return;
+    auto now = std::chrono::steady_clock::now();
+    if (g_stages.empty() && g_stage_name.empty()) g_stage_start = now;
+    stage_close(now);
+    g_stage_name = name;
+    g_stage_t0 = now;
+}
+
+void stage_report() {
+    if (!stage_timing()) return;
+    auto now = std::chrono::steady_clock::now();
+    stage_close(now);
+    if (g_stages.empty()) return;
+    const double total = std::chrono::duration<double>(now - g_stage_start).count();
+    printf("[timing] per-stage wall clock\n");
+    for (auto& s : g_stages)
+        printf("[timing]   %-24s %9.2f s  %5.1f%%\n", s.first.c_str(), s.second,
+               total > 0 ? 100.0 * s.second / total : 0.0);
+    printf("[timing]   %-24s %9.2f s\n", "total (marked)", total);
+    fflush(stdout);
+    g_stages.clear();
 }
 
 static int verbose_level() { verbose(); return g_verbose < 0 ? 0 : g_verbose; }

@@ -2,7 +2,7 @@
 
 <h1 align="center">ArcticMint</h1>
 
-<p align="center"><b>Image in, textured 3D model out, all in native C++.</b><br>
+<p align="center"><b>Prompt in, textured 3D model out, all in native C++.</b><br>
 MIT licensed &middot; C++17 &middot; ggml &middot; CUDA, Vulkan, ROCm, Metal</p>
 
 <p align="center">

@@ -14,6 +14,7 @@ Every output is named NAME_s<seed>.png / .glb / .json, so another seed never rep
 stops before doing any work unless you pass --force.
 """
 import argparse
+import codecs
 import hashlib
 import json
 import os
@@ -52,6 +53,37 @@ def slug(text, limit=40):
     if not s:
         s = "model_" + hashlib.sha1(text.encode("utf-8")).hexdigest()[:6]
     return s + "_" if s in RESERVED else s
+
+
+def read_prompt_file(path):
+    """Text of a prompt file, lines joined. UTF-8 (with or without a BOM) or UTF-16 with a BOM, which is what `>` and Out-File write in
+    Windows PowerShell 5.1. Anything else (Set-Content writes the ANSI code page) raises ValueError saying to save it as UTF-8."""
+    with open(path, "rb") as f:
+        raw = f.read()
+    try:
+        text = raw.decode("utf-16") if raw[:2] in (codecs.BOM_UTF16_LE, codecs.BOM_UTF16_BE) else raw.decode("utf-8-sig")
+    except UnicodeError:
+        raise ValueError("%s is not UTF-8 (Windows PowerShell's Set-Content writes the ANSI code page); save it as UTF-8" % path)
+    return " ".join(text.split())
+
+
+def seed_from_picture(path):
+    """A picture made by this tool is named NAME_s<seed>.png: reuse its seed so --image lands on the same record."""
+    m = re.search(r"_s(\d+)\.[^.]*$", os.path.basename(path))
+    return int(m.group(1)) if m else 1
+
+
+def picture_record(path, image):
+    """The JSON record of an earlier --picture-only run that made this picture (so --image can carry its prompt on), else None."""
+    try:
+        with open(path, encoding="utf-8") as f:
+            rec = json.load(f)
+    except (OSError, ValueError):
+        return None
+    if not isinstance(rec, dict) or rec.get("glb"):          # a record with a model is a finished run: never reused
+        return None
+    mine = os.path.normcase(os.path.abspath(image))
+    return rec if any(os.path.normcase(os.path.abspath(p)) == mine for p in rec.get("pictures") or []) else None
 
 
 def engine_cmd(cli):
@@ -98,6 +130,7 @@ def run_engine(cmd, picture, glb, models, seed, gpu, extra, timeout):
 def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("prompt", nargs="?", help="what to make, one object, positive wording (\"exactly one wheel with eight spokes\")")
+    ap.add_argument("--prompt-file", help="read the prompt from this UTF-8 text file instead (no shell quoting to get wrong)")
     ap.add_argument("-o", "--out", required=True, help="output folder")
     ap.add_argument("--name", help="file name stem (default: from the prompt)")
     ap.add_argument("-m", "--models", help="folder with the engine's GGUF files (needed unless --picture-only)")
@@ -106,7 +139,7 @@ def main(argv=None):
     ap.add_argument("--image-model", choices=sorted(comfy_client.IMAGE_MODELS), default="klein", help="klein = FLUX.2-klein-4B, zimage = Z-Image-Turbo")
     ap.add_argument("--workflows", help="folder with replacement workflow JSON files (API format; default: the bundled ones)")
     ap.add_argument("--style", choices=sorted(STYLES), default="3d-ready", help="3d-ready appends single-object framing words; none = your prompt as typed")
-    ap.add_argument("--seed", type=int, default=1, help="picture seed; also the 3D seed")
+    ap.add_argument("--seed", type=int, help="picture seed, also the 3D seed (default 1; with --image, the _s<seed> in the picture's file name)")
     ap.add_argument("--count", type=int, default=1, help="pictures to make, seeds SEED..SEED+N-1 (more than 1 needs --picture-only)")
     ap.add_argument("--size", type=int, default=1024, help="picture side in pixels")
     ap.add_argument("--picture-only", action="store_true", help="stop after the picture(s)")
@@ -122,8 +155,17 @@ def main(argv=None):
         ap.error("--image and --picture-only do nothing together")
     if a.image and a.count != 1:
         ap.error("--count goes with the picture step; --image skips it")
+    if a.prompt_file:
+        if a.prompt:
+            ap.error("give the prompt as text or as --prompt-file, not both")
+        try:
+            a.prompt = read_prompt_file(a.prompt_file)
+        except (OSError, ValueError) as e:
+            ap.error("cannot read --prompt-file: %s" % e)
     if not a.image and not a.prompt:
-        ap.error("give a prompt, or --image")
+        ap.error("give a prompt (text or --prompt-file), or --image")
+    if a.seed is None:
+        a.seed = seed_from_picture(a.image) if a.image else 1
     if a.count < 1:
         ap.error("--count is at least 1")
     if a.count > 1 and not a.picture_only:
@@ -144,17 +186,21 @@ def main(argv=None):
     stem = "%s_s%d" % (name, a.seed)
     glb, info = (os.path.join(a.out, stem + ext) for ext in (".glb", ".json"))
     pics = [] if a.image else [os.path.join(a.out, "%s_s%d.png" % (name, a.seed + i)) for i in range(a.count)]
-    targets = pics + ([glb] if not a.picture_only else []) + [info]
+    infos = [os.path.join(a.out, "%s_s%d.json" % (name, a.seed + i)) for i in range(a.count)] if pics else [info]
+    prior = picture_record(info, a.image) if a.image else None     # the --picture-only run that made this picture: carry it on, not clash
+    targets = pics + ([glb] if not a.picture_only else []) + [i for i in infos if not (prior and i == info)]
     clash = [t for t in targets if os.path.exists(t)]
     if clash and not a.force:
-        print("error: would overwrite %s. Pick another --seed or --name, or pass --force." % ", ".join(clash), file=sys.stderr)
+        print("error: would overwrite %s. Use another --name or --seed to keep them; --force replaces exactly these files." % ", ".join(clash),
+              file=sys.stderr)
         return 1
     os.makedirs(a.out, exist_ok=True)
     for t in clash:                       # --force: a failed run must not leave an old result next to the new record
         os.remove(t)
-    record = {"prompt": a.prompt, "style": a.style, "seed": a.seed, "image_model": a.image_model if not a.image else None, "pictures": []}
-    t0 = time.time()
+    record = dict(prior) if prior else {"prompt": a.prompt, "style": a.style, "seed": a.seed,
+                                        "image_model": a.image_model if not a.image else None, "pictures": []}
 
+    picture_s = []
     if a.image:
         pictures = [a.image]
     else:
@@ -167,16 +213,19 @@ def main(argv=None):
         pictures = []
         try:
             for i, path in enumerate(pics):
+                t_pic = time.time()
                 print("picture %d/%d: %s seed %d" % (i + 1, a.count, comfy_client.IMAGE_MODELS[a.image_model]["label"], a.seed + i), flush=True)
                 make_picture(client, a.image_model, text, a.seed + i, path, a.size, a.workflows, a.picture_timeout)
                 pictures.append(path)
+                picture_s.append(round(time.time() - t_pic, 1))
         except comfy_client.ComfyError as e:
             print("error: %s" % e, file=sys.stderr)
             return 1
         finally:
             client.free()               # ask ComfyUI to hand the card back
     record["pictures"] = pictures
-    record["picture_s"] = round(time.time() - t0, 1)
+    if picture_s:
+        record["picture_s"] = picture_s[0]
 
     rc = 0
     if not a.picture_only:
@@ -191,9 +240,12 @@ def main(argv=None):
             print("error: the engine ran longer than %g s and was killed (--engine-timeout)" % a.engine_timeout, file=sys.stderr)
         elif rc is not None and rc != 0:
             print("error: the 3D step failed (exit %s)" % rc, file=sys.stderr)
-    with open(info, "w", encoding="utf-8") as f:
-        json.dump(record, f, indent=1)
-        f.write("\n")
+    # one record per picture, so each one can be picked later with --image
+    for i, path in enumerate(infos if a.picture_only else [info]):
+        rec = dict(record, seed=a.seed + i, pictures=[pictures[i]], picture_s=picture_s[i]) if a.picture_only else record
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(rec, f, indent=1)
+            f.write("\n")
     if rc == 0:
         print("done: " + (record.get("glb") or ", ".join(pictures)))
     return 0 if rc == 0 else 1

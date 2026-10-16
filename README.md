@@ -137,7 +137,7 @@ The GLBs are in [`assets/showcase/`](assets/showcase/); prompts, settings and ti
 - **Prompt-to-model command** ([`tools/prompt-to-model/`](tools/prompt-to-model/README.md), Python standard library only). Makes
   the picture from a text prompt through a local ComfyUI (FLUX.2-klein-4B or Z-Image-Turbo), then runs `trellis-cli` on it, and
   keeps the picture, the GLB and a small JSON record together. `--picture-only --count N` makes several seeds to choose from.
-  Tested against a fake ComfyUI and a fake engine; not yet run on real hardware.
+  Tested against a fake ComfyUI and a fake engine, and run end to end once on the authors' PC with the FLUX.2-klein-4B path.
 - **Draft-then-refine seed picking** (opt-in, [`tools/arctic-batch/draft_refine.py`](tools/arctic-batch/draft_refine.py)). For each
   prop it queues cheap res-512 drafts of several candidate images or seeds, scores the drafts with a judge command you supply
   (`size_judge.py` is an example that checks the model's proportions against an expected W,D,H), and only fully generates the

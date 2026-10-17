@@ -7,6 +7,7 @@
 #include "preprocess.h"
 #include "dinov3.h"
 #include "pixal3d.h"
+#include "mv_views.h"
 #include "flow_runner.h"
 #include "ss_decoder.h"
 #include "ss_bbox.h"
@@ -24,6 +25,7 @@
 #include "ggml.h"   // proj_in_channels is read straight off the checkpoint's proj_linear weight
 
 #include <cstdio>
+#include <fstream>
 #include <cstdlib>
 #include <cstdint>
 #include <random>
@@ -201,11 +203,43 @@ int trellis_run(const trellis::TrellisParams& cfg) {
     const std::string FP = pix ? "/pixal3d_" : "/";
     const bool mv = pix && !cfg.views.empty();
     if (!cfg.views.empty() && !pix) { fprintf(stderr, "[trellis] --views needs --model pixal3d\n"); return 1; }
-    if (cfg.view_azim.size() != cfg.views.size()) { fprintf(stderr, "[trellis] --views and --view-azim need the same number of entries\n"); return 1; }
+    const bool framed = pix && cfg.views_as_framed;
+    if (cfg.views_as_framed && !pix) { fprintf(stderr, "[trellis] --views-as-framed (and --view-fov/--view-distance/--view-ortho/--views-transforms) need --model pixal3d\n"); return 1; }
+    // Default mode: every extra view needs its azimuth. Framed mode may take azimuths from the transforms file instead.
+    if (!(framed && cfg.view_azim.empty() && !cfg.views_transforms.empty()) && cfg.view_azim.size() != cfg.views.size()) {
+        fprintf(stderr, "[trellis] --views and --view-azim need the same number of entries%s\n",
+                framed ? " (or pass --views-transforms to take the azimuths from a transforms.json)" : ""); return 1; }
     // multi-view flows are separate fine-tunes (same shapes); decoders, DINOv3, BiRefNet and NAF are shared
     const std::string FPF = mv ? "/pixal3d_mv_" : FP;
     trellis::CameraParams cam;
-    if (pix) {
+    std::vector<trellis::CameraParams> view_cams;      // views-as-framed: one per picture, main first
+    float ms = cfg.mesh_scale;
+    if (framed) {
+        trellis::MvTransforms tf; bool have_tf = false;
+        if (!cfg.views_transforms.empty()) {
+            std::ifstream f(cfg.views_transforms, std::ios::binary);
+            if (!f) { fprintf(stderr, "[trellis] cannot read %s\n", cfg.views_transforms.c_str()); return 1; }
+            std::string text((std::istreambuf_iterator<char>(f)), std::istreambuf_iterator<char>());
+            std::string err;
+            if (!trellis::parse_transforms_json(text, tf, err)) { fprintf(stderr, "[trellis] %s\n", err.c_str()); return 1; }
+            have_tf = true;
+            ms = tf.mesh_scale;                       // upstream: mesh_scale comes from transforms.json
+        }
+        constexpr float DEF_FOV = 0.8575560450553894f;
+        std::vector<trellis::ViewCam> vc; std::string err;
+        if (!trellis::resolve_view_cameras(1 + cfg.views.size(), cfg.view_fov_deg, cfg.view_distance, cfg.view_ortho,
+                                           cfg.view_azim, have_tf ? &tf : nullptr, DEF_FOV, ms,
+                                           cfg.extend_pixel, vc, err)) {
+            fprintf(stderr, "[trellis] views-as-framed: %s\n", err.c_str()); return 1; }
+        try { for (const auto& v : vc) view_cams.push_back(trellis::view_camera_params(v, ms)); }
+        catch (const std::exception& e) { fprintf(stderr, "[trellis] views-as-framed: %s\n", e.what()); return 1; }
+        cam = view_cams[0];
+        printf("[trellis] model family: pixal3d, VIEWS AS FRAMED (no crop/rescale of any view), mesh scale %.2f\n", ms);
+        for (size_t i = 0; i < view_cams.size(); ++i)
+            printf("      view %zu: fov %.2f deg, distance %.4f, azimuth %.1f deg, %s\n", i, view_cams[i].camera_angle_x * 180.0f / 3.14159265358979f,
+                   view_cams[i].distance, view_cams[i].azimuth * 180.0f / 3.14159265358979f,
+                   view_cams[i].ortho_half_width > 0 ? ("orthographic half-width " + std::to_string(view_cams[i].ortho_half_width)).c_str() : "perspective");
+    } else if (pix) {
         constexpr float PIXAL3D_DEFAULT_FOV = 0.8575560450553894f;   // radians (~49.13 deg)
         const float fov = cfg.fov_deg > 0.0f ? cfg.fov_deg * 3.14159265358979f / 180.0f
                                              : PIXAL3D_DEFAULT_FOV;
@@ -253,14 +287,15 @@ int trellis_run(const trellis::TrellisParams& cfg) {
         trellis::Model bm = trellis::Model::load(M + "/birefnet.gguf",
                                                  bg_on_cpu ? -1 : gpu);
         trellis::g_backend = bg_saved_backend;
-        cutout = trellis::birefnet_cutout(img, bm, gpu < 0 ? 0 : gpu, cut_sz);
+        cutout = framed ? trellis::birefnet_framed(img, bm, gpu < 0 ? 0 : gpu, cut_sz)
+                        : trellis::birefnet_cutout(img, bm, gpu < 0 ? 0 : gpu, cut_sz);
         bm.free();
         if (cutout.empty()) return 1;
         chw = trellis::normalize_cutout(cutout, cut_sz, 512);
         if (cascade) chw1024 = trellis::normalize_cutout(cutout, cut_sz, 1024);
     } else {
         printf("[1/6] preprocess %s (%s)\n", img.c_str(), cascade ? "1024 cascade" : "512");
-        cutout = trellis::threshold_cutout(img, cut_sz);
+        cutout = framed ? trellis::threshold_framed(img, cut_sz) : trellis::threshold_cutout(img, cut_sz);
         if (cutout.empty()) return 1;
         chw = trellis::normalize_cutout(cutout, cut_sz, 512);
         if (cascade) chw1024 = trellis::normalize_cutout(cutout, cut_sz, 1024);
@@ -302,14 +337,23 @@ int trellis_run(const trellis::TrellisParams& cfg) {
         cond1024 = pix ? vector<float>(dino1024.begin(), dino1024.begin() + N_GLOBAL_FLOAT) : dino1024;
     // Multi-view: every extra picture goes through the same matte / DINOv3 path; its projection is averaged into each
     // stage's proj cond (build_proj) and its global tokens into the cross-attention context (upstream's "average" fusion).
-    struct ExtraView { vector<float> dino, dino1024, guide, guide1024; float azim = 0; };
+    struct ExtraView { vector<float> dino, dino1024, guide, guide1024; float azim = 0; trellis::CameraParams cam; };
     vector<ExtraView> extra;
     if (mv) {
         for (size_t vi = 0; vi < cfg.views.size(); ++vi) {
             printf("[2/6] extra view %zu: %s (azimuth %.1f deg)\n", vi + 1, cfg.views[vi].c_str(), cfg.view_azim[vi]);
-            ExtraView ev; ev.azim = cfg.view_azim[vi] * 3.14159265358979f / 180.0f;
+            ExtraView ev;
+            if (framed) { ev.cam = view_cams[vi + 1]; ev.azim = ev.cam.azimuth; }
+            else { ev.azim = cfg.view_azim[vi] * 3.14159265358979f / 180.0f; ev.cam = cam; ev.cam.azimuth = ev.azim; }
             std::vector<unsigned char> vcut; int vsz = 0;
-            if (birefnet) {
+            if (framed) {
+                // As upstream: a picture that already carries an alpha keeps it, otherwise it is matted. Never cropped.
+                if (birefnet && !trellis::image_has_alpha(cfg.views[vi])) {
+                    trellis::Model bm = trellis::Model::load(M + "/birefnet.gguf", gpu);
+                    vcut = trellis::birefnet_framed(cfg.views[vi], bm, gpu < 0 ? 0 : gpu, vsz);
+                    bm.free();
+                } else vcut = trellis::threshold_framed(cfg.views[vi], vsz);
+            } else if (birefnet) {
                 trellis::Model bm = trellis::Model::load(M + "/birefnet.gguf", gpu);
                 vcut = trellis::birefnet_cutout(cfg.views[vi], bm, gpu < 0 ? 0 : gpu, vsz);
                 bm.free();
@@ -371,7 +415,7 @@ int trellis_run(const trellis::TrellisParams& cfg) {
             pc = trellis::pixal3d_proj_cond(dn, S, grid_res, proj_ch, cam, cds, nullptr, nullptr, naf_out);
         }
         for (const ExtraView& ev : extra) {
-            trellis::CameraParams cv = cam; cv.azimuth = ev.azim;
+            const trellis::CameraParams cv = ev.cam;      // default mode: the main camera with this view's azimuth
             const vector<float>& dv = (S == 1024) ? ev.dino1024 : ev.dino;
             const vector<float>& gv = (S == 1024) ? ev.guide1024 : ev.guide;
             trellis::ProjCond pv;

@@ -99,6 +99,8 @@ add_library(trellis_core STATIC
   src/mesh_glb.cpp
   src/dinov3.cpp
   src/pixal3d.cpp
+  src/pixal3d_camera.cpp
+  src/mv_views.cpp
   src/naf.cpp
   src/sparse.cpp
   src/shape_decoder.cpp
@@ -466,6 +468,10 @@ set_target_properties(trellis-test-pixal3d PROPERTIES BUILD_RPATH "${GGML_RPATH}
 # --ss-only helpers and the arg parser: pure C++, no ggml, so it also builds and runs without a GPU.
 add_executable(trellis-test-ss-only src/test_ss_only.cpp src/ss_bbox.cpp src/trellis_args.cpp)
 target_include_directories(trellis-test-ss-only PRIVATE include)
+
+# "Views as framed" multi-view helpers: camera math, transforms.json, no-crop framing. Pure C++, no ggml, no GPU.
+add_executable(trellis-test-mv-views src/test_mv_views.cpp src/mv_views.cpp src/pixal3d_camera.cpp src/trellis_args.cpp)
+target_include_directories(trellis-test-mv-views PRIVATE include)
 
 add_executable(trellis-cli src/trellis_cli_main.cpp src/trellis_cli.cpp src/trellis_args.cpp)
 target_link_libraries(trellis-cli PRIVATE trellis_core)

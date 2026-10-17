@@ -49,6 +49,7 @@ struct TrellisParams {
     // MoGe-2 is not ported, so the FOV is a flag; 0 keeps Pixal3D's own default (49.13 deg).
     float fov_deg    = 0.0f;
     float mesh_scale = 1.0f;
+    bool  mesh_scale_set = false;   // --mesh-scale was given (views-as-framed: it then wins over a transforms.json's mesh_scale)
     // Pushes the camera's virtual image border outward, so the projection grid spans more than
     // the frame. The reference's own `extend_pixel`, which upstream never exposes. Rarely useful
     // here: background removal already reframes around the subject's alpha bbox, and grid cells

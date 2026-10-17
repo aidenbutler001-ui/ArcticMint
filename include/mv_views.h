@@ -49,6 +49,39 @@ bool resolve_view_cameras(size_t n_views,
 
 CameraParams view_camera_params(const ViewCam& v, float mesh_scale);
 
+// Everything that decides the cameras of a views-as-framed run, as plain values.
+struct ViewCamRequest {
+    size_t n_views = 1;                    // main + extras
+    float fov_flag_deg = 0.0f;            // --fov (0 = not given). In this mode it behaves like --view-fov with one value.
+    std::vector<float> view_fov_deg, view_distance, view_ortho, extra_azim_deg;
+    bool  mesh_scale_set = false;         // --mesh-scale given
+    float mesh_scale_flag = 1.0f;         // --mesh-scale (or its default)
+    int   extend_pixel = 0;
+    const MvTransforms* transforms = nullptr;
+};
+struct ViewCamResult {
+    std::vector<CameraParams> cams;       // one per view, main first
+    float mesh_scale = 1.0f;
+    std::vector<std::string> warnings;
+};
+// Flags > transforms file > single-view defaults, per field:
+//   mesh_scale : --mesh-scale, else the file's, else 1.
+//   fov        : --view-fov, else --fov, else the file's, else Pixal3D's default 49.13 deg.
+//   distance   : --view-distance, else the file's, else closed-form from that view's fov.
+// An fov override on top of a file keeps the file's distance (the two are independent in
+// transforms.json) and says so in `warnings`.
+bool build_view_cameras(const ViewCamRequest& req, ViewCamResult& out, std::string& error);
+
+// Which matte a picture gets in views-as-framed mode, decided per picture (not from the main one).
+//   birefnet_flag: 1 = --bg-removal birefnet, 0 = threshold, -1 = auto.
+enum class Matte { Alpha, BiRefNet, WhiteThreshold, Refuse };
+Matte choose_matte(bool has_alpha, int birefnet_flag, bool birefnet_available);
+
+// The threshold matte: the picture's own alpha when it has a real one (any alpha < 250),
+// otherwise the white-background rule (min(RGB) < 232 is foreground). Returns whether the
+// picture had an alpha.
+bool threshold_alpha(const unsigned char* rgba, size_t npix, std::vector<float>& alpha);
+
 // Premultiplied square RGBA of a view exactly as framed: same pixels, same size, no crop, no
 // rescale, no recentring. `alpha` is [W*H] in 0..1. Non-square input is refused (it would have
 // to be padded or squashed, and either changes the framing the camera describes).

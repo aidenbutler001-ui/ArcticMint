@@ -1,17 +1,34 @@
 // CPU-only checks for the opt-in "views as framed" multi-view mode: per-view cameras, the
 // orthographic projection, the transforms.json reader, the no-crop framing and the flags.
 // No models, no GPU, no ggml: build `trellis-test-mv-views` and run it.
+#include "birefnet.h"
 #include "mv_views.h"
 #include "pixal3d.h"
+#include "preprocess.h"
 #include "trellis_args.h"
+#include "trellis_model.h"
+#define STB_IMAGE_WRITE_IMPLEMENTATION
+#include "stb_image_write.h"
 
 #include <algorithm>
 #include <cmath>
 #include <limits>
+#include <cstdio>
 #include <stdexcept>
 #include <cstdio>
 #include <string>
 #include <vector>
+
+// preprocess.cpp is linked without ggml: stand in for the BiRefNet network with a fixed matte
+// (everything inside a centred square is foreground) so birefnet_framed can run on CPU.
+namespace trellis {
+std::vector<float> birefnet_matte(const Model&, const std::vector<float>&, int) {
+    const int R = 1024;
+    std::vector<float> l((size_t)R * R, -10.0f);
+    for (int y = R / 4; y < 3 * R / 4; ++y) for (int x = R / 4; x < R / 2; ++x) l[(size_t)y * R + x] = 10.0f;   // left half of the centre square
+    return l;
+}
+}
 
 static int bad = 0;
 #define CHECK(c) do { if (!(c)) { std::fprintf(stderr, "FAIL line %d: %s\n", __LINE__, #c); ++bad; } } while (0)
@@ -217,6 +234,150 @@ static void test_framing() {
     CHECK(!frame_view_rgba(rgba.data(), N, N, a2, out, sz, err));
 }
 
+
+static std::string tmp_png(const char* name, int W, int H, const std::vector<unsigned char>& rgba) {
+    const std::string p = std::string("/tmp/") + name;
+    stbi_write_png(p.c_str(), W, H, 4, rgba.data(), W * 4);
+    return p;
+}
+
+static void test_build_cameras() {
+    using namespace trellis;
+    const float RAD = (float)(PI / 180.0);
+    MvTransforms t; std::string err;
+    CHECK(parse_transforms_json(kExample, t, err));
+    ViewCamRequest rq; ViewCamResult rs;
+    // --fov is honoured with no file (it used to be dropped in this mode)
+    rq.n_views = 2; rq.fov_flag_deg = 30.0f; rq.extra_azim_deg = {90};
+    CHECK(build_view_cameras(rq, rs, err));
+    NEAR(rs.cams[0].camera_angle_x, 30 * RAD, 1e-6); NEAR(rs.cams[1].camera_angle_x, 30 * RAD, 1e-6);
+    NEAR(rs.cams[1].distance, pixal3d_camera(30 * RAD, 1.0f, 512, 0).distance, 1e-5);      // closed form from the same fov
+    CHECK(rs.warnings.empty());
+    // no flag at all: Pixal3D's default
+    rq.fov_flag_deg = 0.0f;
+    CHECK(build_view_cameras(rq, rs, err));
+    NEAR(rs.cams[0].camera_angle_x, CAX, 1e-6);
+    // --view-fov beats --fov
+    rq.fov_flag_deg = 30.0f; rq.view_fov_deg = {20, 25};
+    CHECK(build_view_cameras(rq, rs, err));
+    NEAR(rs.cams[0].camera_angle_x, 20 * RAD, 1e-6); NEAR(rs.cams[1].camera_angle_x, 25 * RAD, 1e-6);
+    // mesh_scale: flag wins over the file; the file wins over the default
+    ViewCamRequest f; f.n_views = 4; f.transforms = &t;
+    t.mesh_scale = 1.7f;
+    CHECK(build_view_cameras(f, rs, err));
+    NEAR(rs.mesh_scale, 1.7, 1e-6); NEAR(rs.cams[2].mesh_scale, 1.7, 1e-6); CHECK(rs.warnings.empty());
+    f.mesh_scale_set = true; f.mesh_scale_flag = 0.8f;
+    CHECK(build_view_cameras(f, rs, err));
+    NEAR(rs.mesh_scale, 0.8, 1e-6); NEAR(rs.cams[3].mesh_scale, 0.8, 1e-6); CHECK(rs.warnings.size() == 1);
+    f.mesh_scale_flag = 1.7f;
+    CHECK(build_view_cameras(f, rs, err) && rs.warnings.empty());      // same value: nothing to say
+    // a file with no mesh_scale parses to 1 and an explicit --mesh-scale still wins
+    CHECK(parse_transforms_json(kExample, t, err));
+    f.mesh_scale_flag = 2.0f;
+    CHECK(build_view_cameras(f, rs, err)); NEAR(rs.mesh_scale, 2.0, 1e-6);
+    // file: fov/distance/azimuth come through untouched
+    ViewCamRequest g; g.n_views = 4; g.transforms = &t;
+    CHECK(build_view_cameras(g, rs, err) && rs.warnings.empty());
+    NEAR(rs.cams[1].camera_angle_x, 0.3490658503988659, 1e-6); NEAR(rs.cams[1].distance, 3.1192049980163574, 1e-5); NEAR(rs.cams[1].azimuth, PI / 2, 1e-5);
+    // fov override on a file keeps the file's distance and warns about it
+    g.view_fov_deg = {30};
+    CHECK(build_view_cameras(g, rs, err));
+    NEAR(rs.cams[0].camera_angle_x, 30 * RAD, 1e-6); NEAR(rs.cams[0].distance, 3.1192049980163574, 1e-5);
+    CHECK(rs.warnings.size() == 1 && rs.warnings[0].find("distance") != std::string::npos);
+    g.view_distance = {2.5f};                                            // ... unless the distance is given too
+    CHECK(build_view_cameras(g, rs, err) && rs.warnings.empty());
+    NEAR(rs.cams[3].distance, 2.5, 1e-6);
+    g.view_fov_deg.clear(); g.view_distance.clear(); g.fov_flag_deg = 30.0f;     // --fov overrides the file too
+    CHECK(build_view_cameras(g, rs, err));
+    NEAR(rs.cams[2].camera_angle_x, 30 * RAD, 1e-6); CHECK(rs.warnings.size() == 1);
+    // orthographic on top of a file: ortho half-width set, the file's distance, azimuth and fov kept
+    ViewCamRequest o; o.n_views = 4; o.transforms = &t; o.view_ortho = {0.55f};
+    CHECK(build_view_cameras(o, rs, err) && rs.warnings.empty());
+    for (int i = 0; i < 4; ++i) { NEAR(rs.cams[i].ortho_half_width, 0.55, 1e-6); NEAR(rs.cams[i].distance, 3.1192049980163574, 1e-5); }
+    NEAR(rs.cams[3].azimuth * 180.0 / PI, -90.0, 1e-3);                   // 270 as -90
+    float px, py;      // the ortho camera really is orthographic: depth no longer matters
+    pixal3d_project_cell(2, 1, 1, 0, rs.cams[0], 512, px, py);
+    float qx, qy; pixal3d_project_cell(2, 1, 1, 1, rs.cams[0], 512, qx, qy);
+    NEAR(px, qx, 1e-4); NEAR(py, qy, 1e-4);
+    // per-view ortho: main perspective, the others orthographic
+    o.view_ortho = {0, 0.55f};
+    o.n_views = 2; o.transforms = nullptr; o.extra_azim_deg = {180}; o.view_distance = {1.8f};
+    CHECK(build_view_cameras(o, rs, err));
+    CHECK(rs.cams[0].ortho_half_width == 0.0f); NEAR(rs.cams[1].ortho_half_width, 0.55, 1e-6); NEAR(rs.cams[1].azimuth, PI, 1e-6);
+    // errors
+    ViewCamRequest bad_r; bad_r.n_views = 3; bad_r.transforms = &t;       // 4 frames, 3 pictures
+    CHECK(!build_view_cameras(bad_r, rs, err) && err.find("frames") != std::string::npos);
+}
+
+static void test_matte() {
+    using namespace trellis;
+    // auto: alpha if the picture has one, else BiRefNet, else refuse (never the white rule by accident)
+    CHECK(choose_matte(true,  -1, true)  == Matte::Alpha);
+    CHECK(choose_matte(true,  -1, false) == Matte::Alpha);
+    CHECK(choose_matte(false, -1, true)  == Matte::BiRefNet);
+    CHECK(choose_matte(false, -1, false) == Matte::Refuse);
+    // explicit flags
+    CHECK(choose_matte(false, 1, true)  == Matte::BiRefNet);
+    CHECK(choose_matte(true,  1, true)  == Matte::BiRefNet);
+    CHECK(choose_matte(false, 0, true)  == Matte::WhiteThreshold);
+    CHECK(choose_matte(true,  0, true)  == Matte::Alpha);
+    // the failure the review found: a main picture WITH alpha must not decide the matte of the others
+    const bool has_alpha[3] = {true, false, false};
+    for (bool a : has_alpha) CHECK(choose_matte(a, -1, true) == (a ? Matte::Alpha : Matte::BiRefNet));
+
+    // threshold_alpha: own alpha when real, white rule otherwise
+    std::vector<unsigned char> px = {255,255,255,255,  10,20,30,255,  240,240,250,255,  200,200,200,255};
+    std::vector<float> al;
+    CHECK(!threshold_alpha(px.data(), 4, al));
+    CHECK(al[0] == 0.0f && al[1] == 1.0f && al[2] == 0.0f && al[3] == 1.0f);          // white and near-white are background
+    std::vector<unsigned char> pa = {255,255,255,255,  10,20,30,128,  240,240,250,0,  200,200,200,249};
+    CHECK(threshold_alpha(pa.data(), 4, al));
+    NEAR(al[0], 1.0, 1e-6); NEAR(al[1], 128.0 / 255, 1e-6); NEAR(al[2], 0.0, 1e-6);   // a white pixel with alpha 255 stays foreground
+    // grey MV-Adapter-style background (0.5 grey, no alpha) under the white rule becomes foreground: the reason Refuse exists
+    std::vector<unsigned char> grey = {128,128,128,255, 128,128,128,255};
+    CHECK(!threshold_alpha(grey.data(), 2, al) && al[0] == 1.0f && al[1] == 1.0f);
+}
+
+static void test_framed_files() {
+    using namespace trellis;
+    // 16x16 view, an opaque 4x4 patch near the top-left over a transparent background
+    const int N = 16;
+    std::vector<unsigned char> rgba((size_t)N * N * 4, 0);
+    for (int y = 2; y < 6; ++y) for (int x = 3; x < 7; ++x) { size_t p = ((size_t)y * N + x) * 4; rgba[p] = 220; rgba[p + 1] = 80; rgba[p + 2] = 40; rgba[p + 3] = 255; }
+    const std::string sq = tmp_png("mv_views_square.png", N, N, rgba);
+    int W = 0, H = 0;
+    CHECK(image_size(sq, W, H) && W == N && H == N);
+    CHECK(!image_size("/tmp/mv_views_does_not_exist.png", W, H));
+    CHECK(image_has_alpha(sq));
+    int sz = 0;
+    std::vector<unsigned char> out = threshold_framed(sq, sz);
+    CHECK(sz == N && out.size() == (size_t)N * N * 4);
+    CHECK(out[((size_t)2 * N + 3) * 4 + 3] == 255 && out[((size_t)2 * N + 3) * 4] == 220);        // patch still at (3,2)
+    CHECK(out[((size_t)1 * N + 3) * 4 + 3] == 0 && out[((size_t)2 * N + 2) * 4 + 3] == 0);
+    // the cropped path would have shrunk it: the framed one must not
+    CHECK(sz != 6);
+    // non-square: image_size reports it (the CLI refuses before loading any model) and the framing refuses it too
+    std::vector<unsigned char> wide((size_t)16 * 8 * 4, 255);
+    const std::string wp = tmp_png("mv_views_wide.png", 16, 8, wide);
+    CHECK(image_size(wp, W, H) && W == 16 && H == 8);
+    CHECK(threshold_framed(wp, sz).empty() && sz == 0);
+    // BiRefNet path (stub matte): same size out, matte applied, nothing cropped. An opaque RGB picture (no alpha).
+    std::vector<unsigned char> opaque((size_t)N * N * 4, 255);
+    for (size_t i = 0; i < (size_t)N * N; ++i) { opaque[i * 4] = 128; opaque[i * 4 + 1] = 128; opaque[i * 4 + 2] = 128; }   // 0.5 grey everywhere
+    const std::string gp = tmp_png("mv_views_grey.png", N, N, opaque);
+    CHECK(!image_has_alpha(gp));
+    Model bm;
+    out = birefnet_framed(gp, bm, 0, sz);
+    CHECK(sz == N && out.size() == (size_t)N * N * 4);
+    CHECK(out[((size_t)8 * N + 5) * 4 + 3] == 255 && out[((size_t)8 * N + 5) * 4] == 128);       // inside the stub's foreground
+    CHECK(out[((size_t)8 * N + 12) * 4 + 3] == 0 && out[((size_t)8 * N + 12) * 4] == 0);         // outside: transparent, not the grey
+    CHECK(out[((size_t)1 * N + 1) * 4 + 3] == 0);
+    // and under the white rule the same grey picture is entirely foreground (what the per-picture matte choice avoids)
+    out = threshold_framed(gp, sz);
+    CHECK(out[((size_t)1 * N + 1) * 4 + 3] == 255);
+    std::remove(sq.c_str()); std::remove(wp.c_str()); std::remove(gp.c_str());
+}
+
 static void test_args() {
     trellis::TrellisParams p;
     CHECK(!p.views_as_framed && p.view_fov_deg.empty() && p.view_distance.empty() && p.view_ortho.empty() && p.views_transforms.empty());   // default behaviour untouched
@@ -249,6 +410,9 @@ int main() {
     test_resolve();
     test_framing();
     test_args();
+    test_build_cameras();
+    test_matte();
+    test_framed_files();
     std::printf(bad ? "\n%d check(s) FAILED\n" : "all checks passed\n", bad);
     return bad ? 1 : 0;
 }

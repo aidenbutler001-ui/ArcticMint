@@ -63,6 +63,11 @@ static std::vector<unsigned char> alpha_to_cutout(const unsigned char* rgba, int
     return crop;
 }
 
+bool image_size(const std::string& path, int& W, int& H) {
+    int ch;
+    return stbi_info(path.c_str(), &W, &H, &ch) != 0;
+}
+
 bool image_has_alpha(const std::string& path) {
     int W, H, ch;
     unsigned char* img = stbi_load(path.c_str(), &W, &H, &ch, 4);
@@ -146,13 +151,8 @@ std::vector<unsigned char> threshold_framed(const std::string& path, int& sz) {
     int W, H, ch;
     unsigned char* img = stbi_load(path.c_str(), &W, &H, &ch, 4);
     if (!img) { fprintf(stderr, "preprocess: cannot load %s\n", path.c_str()); sz = 0; return {}; }
-    std::vector<float> alpha((size_t)W * H);
-    bool has_alpha = false;
-    for (size_t i = 0; i < (size_t)W * H; ++i) if (img[4*i+3] < 250) { has_alpha = true; break; }
-    for (size_t i = 0; i < (size_t)W * H; ++i) {
-        if (has_alpha) alpha[i] = img[4*i+3] / 255.0f;
-        else { int mn = std::min({img[4*i], img[4*i+1], img[4*i+2]}); alpha[i] = mn < 232 ? 1.0f : 0.0f; }
-    }
+    std::vector<float> alpha;
+    threshold_alpha(img, (size_t)W * H, alpha);
     std::vector<unsigned char> out = framed_from(img, W, H, alpha, path, sz);
     stbi_image_free(img);
     return out;

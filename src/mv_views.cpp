@@ -187,6 +187,50 @@ bool resolve_view_cameras(size_t n, const std::vector<float>& fov_deg, const std
     return true;
 }
 
+bool build_view_cameras(const ViewCamRequest& req, ViewCamResult& out, std::string& error) {
+    out = ViewCamResult{};
+    const float PI = 3.14159265358979f;
+    constexpr float DEF_FOV = 0.8575560450553894f;     // Pixal3D's default (~49.13 deg)
+    out.mesh_scale = req.mesh_scale_set ? req.mesh_scale_flag
+                   : req.transforms ? req.transforms->mesh_scale : req.mesh_scale_flag;
+    if (req.mesh_scale_set && req.transforms && std::fabs(req.transforms->mesh_scale - req.mesh_scale_flag) > 1e-6f)
+        out.warnings.push_back("--mesh-scale " + std::to_string(req.mesh_scale_flag) + " overrides the transforms file's mesh_scale " + std::to_string(req.transforms->mesh_scale));
+    std::vector<float> fov = req.view_fov_deg;
+    if (fov.empty() && req.fov_flag_deg > 0.0f) fov.push_back(req.fov_flag_deg);
+    std::vector<ViewCam> vc;
+    if (!resolve_view_cameras(req.n_views, fov, req.view_distance, req.view_ortho, req.extra_azim_deg,
+                              req.transforms, DEF_FOV, out.mesh_scale, req.extend_pixel, vc, error)) return false;
+    if (req.transforms && !fov.empty() && req.view_distance.empty()) {
+        for (size_t i = 0; i < vc.size(); ++i)
+            if (std::fabs(vc[i].fov_rad - req.transforms->cams[i].fov_rad) > 1e-4f) {
+                out.warnings.push_back("fov overridden to " + std::to_string(vc[i].fov_rad * 180.0f / PI) + " deg but the camera distance is still the transforms file's ("
+                                       + std::to_string(vc[i].distance) + "); pass --view-distance to change it");
+                break;
+            }
+    }
+    try { for (const auto& v : vc) out.cams.push_back(view_camera_params(v, out.mesh_scale)); }
+    catch (const std::exception& e) { error = e.what(); return false; }
+    return true;
+}
+
+Matte choose_matte(bool has_alpha, int birefnet_flag, bool birefnet_available) {
+    if (birefnet_flag == 1) return Matte::BiRefNet;
+    if (birefnet_flag == 0) return has_alpha ? Matte::Alpha : Matte::WhiteThreshold;
+    if (has_alpha) return Matte::Alpha;
+    return birefnet_available ? Matte::BiRefNet : Matte::Refuse;
+}
+
+bool threshold_alpha(const unsigned char* rgba, size_t npix, std::vector<float>& alpha) {
+    alpha.assign(npix, 0.0f);
+    bool has_alpha = false;
+    for (size_t i = 0; i < npix; ++i) if (rgba[4 * i + 3] < 250) { has_alpha = true; break; }
+    for (size_t i = 0; i < npix; ++i) {
+        if (has_alpha) alpha[i] = rgba[4 * i + 3] / 255.0f;
+        else { const int mn = std::min({rgba[4 * i], rgba[4 * i + 1], rgba[4 * i + 2]}); alpha[i] = mn < 232 ? 1.0f : 0.0f; }
+    }
+    return has_alpha;
+}
+
 CameraParams view_camera_params(const ViewCam& v, float mesh_scale) {
     CameraParams c = pixal3d_camera_explicit(v.fov_rad, v.distance, mesh_scale, v.ortho_half_width);
     c.azimuth = v.azimuth_rad;

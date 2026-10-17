@@ -31,7 +31,7 @@ bool parse_camera_arg(const std::string& name, const char* value, TrellisParams&
         return false;
     }
     if (name == "fov") p.fov_deg = n;
-    else p.mesh_scale = n;
+    else { p.mesh_scale = n; p.mesh_scale_set = true; }
     return true;
 }
 

@@ -223,16 +223,19 @@ int trellis_run(const trellis::TrellisParams& cfg) {
             std::string err;
             if (!trellis::parse_transforms_json(text, tf, err)) { fprintf(stderr, "[trellis] %s\n", err.c_str()); return 1; }
             have_tf = true;
-            ms = tf.mesh_scale;                       // upstream: mesh_scale comes from transforms.json
         }
-        constexpr float DEF_FOV = 0.8575560450553894f;
-        std::vector<trellis::ViewCam> vc; std::string err;
-        if (!trellis::resolve_view_cameras(1 + cfg.views.size(), cfg.view_fov_deg, cfg.view_distance, cfg.view_ortho,
-                                           cfg.view_azim, have_tf ? &tf : nullptr, DEF_FOV, ms,
-                                           cfg.extend_pixel, vc, err)) {
-            fprintf(stderr, "[trellis] views-as-framed: %s\n", err.c_str()); return 1; }
-        try { for (const auto& v : vc) view_cams.push_back(trellis::view_camera_params(v, ms)); }
-        catch (const std::exception& e) { fprintf(stderr, "[trellis] views-as-framed: %s\n", e.what()); return 1; }
+        trellis::ViewCamRequest rq;
+        rq.n_views = 1 + cfg.views.size();
+        rq.fov_flag_deg = cfg.fov_deg;
+        rq.view_fov_deg = cfg.view_fov_deg; rq.view_distance = cfg.view_distance;
+        rq.view_ortho = cfg.view_ortho; rq.extra_azim_deg = cfg.view_azim;
+        rq.mesh_scale_set = cfg.mesh_scale_set; rq.mesh_scale_flag = cfg.mesh_scale;
+        rq.extend_pixel = cfg.extend_pixel;
+        rq.transforms = have_tf ? &tf : nullptr;
+        trellis::ViewCamResult rs; std::string err;
+        if (!trellis::build_view_cameras(rq, rs, err)) { fprintf(stderr, "[trellis] views-as-framed: %s\n", err.c_str()); return 1; }
+        for (const std::string& w : rs.warnings) fprintf(stderr, "[trellis] warning: %s\n", w.c_str());
+        view_cams = rs.cams; ms = rs.mesh_scale;
         cam = view_cams[0];
         printf("[trellis] model family: pixal3d, VIEWS AS FRAMED (no crop/rescale of any view), mesh scale %.2f\n", ms);
         for (size_t i = 0; i < view_cams.size(); ++i)
@@ -272,6 +275,28 @@ int trellis_run(const trellis::TrellisParams& cfg) {
             else printf("      (birefnet.gguf not found -- falling back to threshold matte;"
                         " bright highlights may punch holes)\n");
         }
+    }
+    // Views as framed: the matte is decided per picture (its own alpha if it has one, else BiRefNet, else refuse),
+    // and every picture must be square, all before any model is loaded.
+    std::vector<trellis::Matte> mattes;
+    if (framed) {
+        FILE* bf = fopen((M + "/birefnet.gguf").c_str(), "rb");
+        const bool bn_ok = bf != nullptr; if (bf) fclose(bf);
+        std::vector<std::string> pics{img}; pics.insert(pics.end(), cfg.views.begin(), cfg.views.end());
+        for (const std::string& pth : pics) {
+            int W = 0, H = 0;
+            if (!trellis::image_size(pth, W, H)) { fprintf(stderr, "[trellis] cannot read picture %s\n", pth.c_str()); return 1; }
+            if (W != H) { fprintf(stderr, "[trellis] views-as-framed: %s is %dx%d; every picture must be square (cropping or padding would change the framing its camera describes)\n", pth.c_str(), W, H); return 1; }
+            const trellis::Matte mt = trellis::choose_matte(trellis::image_has_alpha(pth), cfg.birefnet, bn_ok);
+            if (mt == trellis::Matte::Refuse) {
+                fprintf(stderr, "[trellis] views-as-framed: %s has no alpha and birefnet.gguf is not in %s; refusing to guess a matte "
+                                "(the white-background rule turns grey MV-Adapter backgrounds into foreground). Pre-matte the picture, add birefnet.gguf, "
+                                "or pass --bg-removal threshold to accept the white-background rule\n", pth.c_str(), M.c_str());
+                return 1;
+            }
+            mattes.push_back(mt);
+        }
+        birefnet = mattes[0] == trellis::Matte::BiRefNet;
     }
     vector<float> chw, chw1024;
     std::vector<unsigned char> cutout; int cut_sz = 0;   // the bg-removal result (for --dump-bg / --bg-only)
@@ -341,14 +366,15 @@ int trellis_run(const trellis::TrellisParams& cfg) {
     vector<ExtraView> extra;
     if (mv) {
         for (size_t vi = 0; vi < cfg.views.size(); ++vi) {
-            printf("[2/6] extra view %zu: %s (azimuth %.1f deg)\n", vi + 1, cfg.views[vi].c_str(), cfg.view_azim[vi]);
             ExtraView ev;
             if (framed) { ev.cam = view_cams[vi + 1]; ev.azim = ev.cam.azimuth; }
             else { ev.azim = cfg.view_azim[vi] * 3.14159265358979f / 180.0f; ev.cam = cam; ev.cam.azimuth = ev.azim; }
+            printf("[2/6] extra view %zu: %s (azimuth %.1f deg)\n", vi + 1, cfg.views[vi].c_str(), ev.azim * 180.0f / 3.14159265358979f);
             std::vector<unsigned char> vcut; int vsz = 0;
             if (framed) {
                 // As upstream: a picture that already carries an alpha keeps it, otherwise it is matted. Never cropped.
-                if (birefnet && !trellis::image_has_alpha(cfg.views[vi])) {
+                // The matte was chosen per picture above, not from the main picture.
+                if (mattes[vi + 1] == trellis::Matte::BiRefNet) {
                     trellis::Model bm = trellis::Model::load(M + "/birefnet.gguf", gpu);
                     vcut = trellis::birefnet_framed(cfg.views[vi], bm, gpu < 0 ? 0 : gpu, vsz);
                     bm.free();

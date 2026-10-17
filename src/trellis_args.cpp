@@ -31,7 +31,7 @@ bool parse_camera_arg(const std::string& name, const char* value, TrellisParams&
         return false;
     }
     if (name == "fov") p.fov_deg = n;
-    else p.mesh_scale = n;
+    else { p.mesh_scale = n; p.mesh_scale_set = true; }
     return true;
 }
 
@@ -95,6 +95,14 @@ void print_usage(const char* argv0, bool server) {
         "                          counter-clockwise from above; 180 = the back). Needs the\n"
         "                          pixal3d_mv_*.gguf flow weights. Each view is matted and cropped on\n"
         "                          its own, so the same --fov applies to all.\n"
+        "      --views-as-framed   pixal3d multi-view, opt-in: no view (the main one included) is cropped,\n"
+        "                          recentred or rescaled, and each gets its own camera. Square pictures.\n"
+        "      --view-fov 20,20    per-view fov in degrees (main first), or one value for all\n"
+        "      --view-distance D   per-view camera distance (main first), or one for all\n"
+        "      --view-ortho 0.55   per-view orthographic half-width (0 = perspective); MV-Adapter views\n"
+        "                          are orthographic: distance 1.8, half-width 0.55\n"
+        "      --views-transforms F  take fov, distance, relative azimuth and mesh_scale from an upstream\n"
+        "                          transforms.json (frame 0 = the main picture); flags above override it\n"
         "      --no-naf            pixal3d: skip NAF guided upsampling (needs no naf.gguf, but\n"
         "                          the shape/texture stages then lose their high-frequency\n"
         "                          projection branch)\n"
@@ -234,6 +242,27 @@ bool parse_args(int argc, char** argv, TrellisParams& p) {
                 }
                 i = j + 1;
             }
+        }
+        else if (a == "--views-as-framed")      { p.views_as_framed = true; }
+        else if (a == "--views-transforms")     { const char* v = need(a.c_str()); if (!v) return false; p.views_transforms = v; p.views_as_framed = true; }
+        else if (a == "--view-fov" || a == "--view-distance" || a == "--view-ortho") {
+            const char* v = need(a.c_str()); if (!v) return false;
+            std::vector<float>& dst = a == "--view-fov" ? p.view_fov_deg : a == "--view-distance" ? p.view_distance : p.view_ortho;
+            dst.clear();
+            std::string s(v); size_t i = 0;
+            while (i <= s.size()) {
+                size_t j = s.find(',', i); if (j == std::string::npos) j = s.size();
+                const std::string t = s.substr(i, j - i);
+                char* e = nullptr; const float d = std::strtof(t.c_str(), &e);
+                const bool zero_ok = a == "--view-ortho";
+                if (t.empty() || *e || !std::isfinite(d) || d < 0 || (d == 0 && !zero_ok)) {
+                    fprintf(stderr, "[trellis] %s wants comma-separated positive numbers%s\n", a.c_str(), zero_ok ? " (0 = perspective)" : "");
+                    return false;
+                }
+                dst.push_back(d);
+                i = j + 1;
+            }
+            p.views_as_framed = true;
         }
         else if (a == "--gpu")                  { const char* v = need(a.c_str()); if (!v) return false; p.gpu = atoi(v); }
         else if (a == "--backend")              { const char* v = need(a.c_str()); if (!v) return false; p.backend = v; }

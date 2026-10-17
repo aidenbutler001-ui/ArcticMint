@@ -1,5 +1,6 @@
 #include "preprocess.h"
 #include "birefnet.h"
+#include "mv_views.h"
 #include "trellis_model.h"
 #include <cstdio>
 #include <cmath>
@@ -62,6 +63,11 @@ static std::vector<unsigned char> alpha_to_cutout(const unsigned char* rgba, int
     return crop;
 }
 
+bool image_size(const std::string& path, int& W, int& H) {
+    int ch;
+    return stbi_info(path.c_str(), &W, &H, &ch) != 0;
+}
+
 bool image_has_alpha(const std::string& path) {
     int W, H, ch;
     unsigned char* img = stbi_load(path.c_str(), &W, &H, &ch, 4);
@@ -97,10 +103,9 @@ std::vector<float> preprocess_image(const std::string& path, int S) {
     return normalize_cutout(crop, sz, S);
 }
 
-std::vector<unsigned char> birefnet_cutout(const std::string& path, const Model& bm, int gpu, int& sz) {
-    int W, H, ch;
-    unsigned char* img = stbi_load(path.c_str(), &W, &H, &ch, 4);
-    if (!img) { fprintf(stderr, "birefnet_cutout: cannot load %s\n", path.c_str()); sz = 0; return {}; }
+// BiRefNet matte restored to the source dimensions: [W*H] in 0..1 (false on a resize failure).
+static bool birefnet_alpha(const unsigned char* img, int W, int H, const Model& bm, int gpu,
+                           std::vector<float>& alpha) {
     // BiRefNet is evaluated at its fixed square size, but its matte is resized
     // back to the source dimensions before cropping. Applying it to the 1024x1024
     // inference image would permanently squash non-square inputs.
@@ -115,15 +120,53 @@ std::vector<unsigned char> birefnet_cutout(const std::string& path, const Model&
     std::vector<float> logits = birefnet_matte(bm, chw, gpu);   // [R*R]
     std::vector<float> alpha1024((size_t)R*R);
     for (size_t i = 0; i < alpha1024.size(); ++i) alpha1024[i] = 1.0f / (1.0f + std::exp(-logits[i]));
-    std::vector<float> alpha((size_t)W*H);
-    if (!stbir_resize_float(alpha1024.data(), R, R, 0, alpha.data(), W, H, 0, 1)) {
-        stbi_image_free(img);
-        sz = 0;
-        return {};
-    }
+    alpha.resize((size_t)W*H);
+    if (!stbir_resize_float(alpha1024.data(), R, R, 0, alpha.data(), W, H, 0, 1)) return false;
+    return true;
+}
+
+std::vector<unsigned char> birefnet_cutout(const std::string& path, const Model& bm, int gpu, int& sz) {
+    int W, H, ch;
+    unsigned char* img = stbi_load(path.c_str(), &W, &H, &ch, 4);
+    if (!img) { fprintf(stderr, "birefnet_cutout: cannot load %s\n", path.c_str()); sz = 0; return {}; }
+    std::vector<float> alpha;
+    if (!birefnet_alpha(img, W, H, bm, gpu, alpha)) { stbi_image_free(img); sz = 0; return {}; }
     std::vector<unsigned char> crop = alpha_to_cutout(img, W, H, alpha, sz);
     stbi_image_free(img);
     return crop;
+}
+
+// "Views as framed": same matte as the cutouts above, but the picture is kept exactly as given.
+static std::vector<unsigned char> framed_from(const unsigned char* img, int W, int H,
+                                              const std::vector<float>& alpha, const std::string& path, int& sz) {
+    std::vector<unsigned char> out; std::string err;
+    if (!frame_view_rgba(img, W, H, alpha, out, sz, err)) {
+        fprintf(stderr, "framed view %s: %s\n", path.c_str(), err.c_str());
+        sz = 0; return {};
+    }
+    return out;
+}
+
+std::vector<unsigned char> threshold_framed(const std::string& path, int& sz) {
+    int W, H, ch;
+    unsigned char* img = stbi_load(path.c_str(), &W, &H, &ch, 4);
+    if (!img) { fprintf(stderr, "preprocess: cannot load %s\n", path.c_str()); sz = 0; return {}; }
+    std::vector<float> alpha;
+    threshold_alpha(img, (size_t)W * H, alpha);
+    std::vector<unsigned char> out = framed_from(img, W, H, alpha, path, sz);
+    stbi_image_free(img);
+    return out;
+}
+
+std::vector<unsigned char> birefnet_framed(const std::string& path, const Model& bm, int gpu, int& sz) {
+    int W, H, ch;
+    unsigned char* img = stbi_load(path.c_str(), &W, &H, &ch, 4);
+    if (!img) { fprintf(stderr, "birefnet_framed: cannot load %s\n", path.c_str()); sz = 0; return {}; }
+    std::vector<float> alpha;
+    if (!birefnet_alpha(img, W, H, bm, gpu, alpha)) { stbi_image_free(img); sz = 0; return {}; }
+    std::vector<unsigned char> out = framed_from(img, W, H, alpha, path, sz);
+    stbi_image_free(img);
+    return out;
 }
 
 } // namespace trellis

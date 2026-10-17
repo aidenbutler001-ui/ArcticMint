@@ -49,6 +49,7 @@ struct TrellisParams {
     // MoGe-2 is not ported, so the FOV is a flag; 0 keeps Pixal3D's own default (49.13 deg).
     float fov_deg    = 0.0f;
     float mesh_scale = 1.0f;
+    bool  mesh_scale_set = false;   // --mesh-scale was given (views-as-framed: it then wins over a transforms.json's mesh_scale)
     // Pushes the camera's virtual image border outward, so the projection grid spans more than
     // the frame. The reference's own `extend_pixel`, which upstream never exposes. Rarely useful
     // here: background removal already reframes around the subject's alpha bbox, and grid cells
@@ -65,6 +66,18 @@ struct TrellisParams {
     // the camera at world +x when the main camera is at -y). Needs the pixal3d_mv_* flow weights.
     std::vector<std::string> views;
     std::vector<float> view_azim;
+    // Opt-in "views as framed" multi-view (pixal3d only; the default stays the single-view
+    // cutout per picture). No view, the main one included, is cropped, recentred or rescaled:
+    // its framing is what the camera describes, as in upstream inference_mv.py. Each view gets
+    // its own camera: fov / distance / orthographic half-width, one value per view (main first)
+    // or one value for all, else read from `views_transforms` (an upstream transforms.json:
+    // fov, distance and relative azimuth per frame, plus mesh_scale), else the single-view
+    // defaults. Explicit flags win over the file.
+    bool views_as_framed = false;
+    std::vector<float> view_fov_deg;       // --view-fov, degrees
+    std::vector<float> view_distance;      // --view-distance
+    std::vector<float> view_ortho;         // --view-ortho: half-width in world units, 0 = perspective
+    std::string views_transforms;          // --views-transforms transforms.json
 
     bool cascade    = true;     // 1024 cascade (default); --res 512 selects the light path
     int  hr_res     = 1024;     // HR cascade target resolution (1024 / 1536)

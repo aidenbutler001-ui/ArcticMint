@@ -13,60 +13,6 @@ static constexpr int D_DINO   = 1024;   // DINOv3 ViT-L/16 width
 static constexpr int N_GLOBAL = 5;      // cls + 4 register tokens
 static constexpr int PATCH    = 16;
 
-// Blender's sensor model, as the reference reimplements it: a 32 mm sensor with the focal
-// length recovered from the horizontal FOV.
-static float focal_pixels(float camera_angle_x, int resolution) {
-    const float focal = 16.0f / std::tan(camera_angle_x * 0.5f);
-    return focal * (float)resolution / 32.0f;
-}
-
-CameraParams pixal3d_camera(float camera_angle_x, float mesh_scale,
-                            int image_resolution, int extend_pixel) {
-    if (!std::isfinite(camera_angle_x) || camera_angle_x <= 0 || camera_angle_x >= 3.14159265358979323846 ||
-        !std::isfinite(mesh_scale) || mesh_scale <= 0 || image_resolution <= 0 || extend_pixel < 0)
-        throw std::invalid_argument("pixal3d: invalid camera parameters");
-    CameraParams cam;
-    cam.camera_angle_x = camera_angle_x;
-    cam.mesh_scale     = mesh_scale;
-    // Reference: the grid corner (-1, 0, 0) maps through the same rotation as every other grid
-    // point, giving world x = -0.5/mesh_scale, and is required to land on the left image border
-    // (target x = -extend_pixel). Solving the perspective divide for the camera distance:
-    //   distance = f_pixels * x_world / x_ndc  with  x_ndc = -extend_pixel - resolution/2
-    const float f_px = focal_pixels(camera_angle_x, image_resolution);
-    const float x_world = -0.5f / mesh_scale;
-    const float x_ndc   = -(float)extend_pixel - (float)image_resolution * 0.5f;
-    cam.distance = f_px * x_world / x_ndc;
-    if (!std::isfinite(cam.distance) || cam.distance <= 0)
-        throw std::invalid_argument("pixal3d: camera distance is not finite and positive");
-    return cam;
-}
-
-void pixal3d_project_cell(int R, int cx, int cy, int cz, const CameraParams& cam,
-                          int image_resolution, float& px, float& py) {
-    const float den = R > 1 ? (float)(R - 1) : 1.0f;
-    const float gx = -1.0f + 2.0f * (float)cx / den;
-    const float gy = -1.0f + 2.0f * (float)cy / den;
-    const float gz = -1.0f + 2.0f * (float)cz / den;
-    // ProjGrid rotates the grid into Blender axes with [[1,0,0],[0,0,-1],[0,1,0]] and halves it
-    // by mesh_scale; the frontal view matrix then reduces the world->camera transform to
-    // x_cam = wx, y_cam = wz, z_cam = -wy - distance.
-    const float s = 1.0f / (2.0f * cam.mesh_scale);
-    float wx = gx * s, wy = -gz * s;
-    const float wz = gy * s;
-    if (cam.azimuth != 0.0f) {          // a camera orbited by +a sees the grid rotated by -a about world Z
-        const float ca = std::cos(cam.azimuth), sa = std::sin(cam.azimuth);
-        const float rx = wx * ca + wy * sa, ry = -wx * sa + wy * ca;
-        wx = rx; wy = ry;
-    }
-    const float depth = wy + cam.distance;
-    const float f_px  = focal_pixels(cam.camera_angle_x, image_resolution);
-    const float inv   = 1.0f / (depth + 1e-8f);
-    px = f_px * wx * inv + (float)image_resolution * 0.5f;
-    py = -f_px * wz * inv + (float)image_resolution * 0.5f;   // image y grows downward
-    if (!std::isfinite(px) || !std::isfinite(py))
-        throw std::invalid_argument("pixal3d: camera projects a cell to non-finite coordinates");
-}
-
 // Bilinear sample of a channel-major [C, Hf*Wf] map at a pixel position expressed in the
 // `S`-sized image frame. Mirrors F.grid_sample(align_corners=False, padding_mode="border").
 static void sample_bilinear(const float* map, int Hf, int Wf, int C, int S,

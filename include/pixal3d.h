@@ -20,6 +20,7 @@ struct CameraParams {
     float camera_angle_x = 0.8575560450553894f;   // horizontal FOV in radians
     float distance       = 2.0f;                  // camera distance along the frontal axis
     float mesh_scale     = 1.0f;
+    float ortho_half_width = 0.0f;                // 0 = perspective (default). >0 = orthographic: the frame spans +-this in world units (distance and fov are then ignored by the projection)
     float azimuth        = 0.0f;                  // multi-view: this camera's orbit angle (radians, CCW from above) around world Z; 0 = the frontal camera
 };
 
@@ -28,6 +29,12 @@ struct CameraParams {
 // free parameter — upstream estimates it with MoGe-2, we take it from --fov.
 CameraParams pixal3d_camera(float camera_angle_x, float mesh_scale = 1.0f,
                             int image_resolution = 512, int extend_pixel = 0);
+
+// A camera with an explicit distance (and optionally an orthographic frame) instead of the
+// closed-form one. Used by the opt-in "views as framed" multi-view mode, where each view brings
+// its own fov and distance (upstream inference_mv.py reads them from transforms.json).
+CameraParams pixal3d_camera_explicit(float camera_angle_x, float distance, float mesh_scale = 1.0f,
+                                     float ortho_half_width = 0.0f);
 
 // Project the centre of one grid cell of an R^3 grid to (x, y) pixel coordinates in an
 // `image_resolution`-sized frame. Cells are indexed as the DiT tokenizes a dense grid: value
